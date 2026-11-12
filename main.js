@@ -3,7 +3,7 @@ import { currentSession, signIn, signOut } from './auth.js';
 import {
   itemData, jsonResources, loadLookup, orgUsers, pool, portalSelf, schemaCheck, searchItems, updateItemData,
 } from './arcgis.js';
-import { FIXABLE_TYPES, applySwap, findReferences, nodeAt, planSwap, pointer } from './match.js';
+import { FIXABLE_TYPES, applySwap, findReferences, nodeAt, planSwap, pointer, replacementChain } from './match.js';
 
 // Where each item type keeps its references.
 const DATA_TYPES = ['Web Map', 'Web Scene', 'Group Layer', 'StoryMap', 'Dashboard', 'Web Experience',
@@ -196,28 +196,59 @@ function describe(location) {
     : [`One of ${location.candidates.length} retiring items sharing this service: `, ...names, more];
 }
 
+/** Title plus a warning when the item is itself on its way out. */
+function targetLabel(item) {
+  const superseded = item.deprecated || item.newVersionId;
+  return item.title + (superseded ? ` — also deprecated${item.retires ? `, retires ${item.retires}` : ''}` : '');
+}
+
 function renderLocation(result, location) {
   const node = typeof location.document.doc === 'object' ? nodeAt(location.document.doc, location.path) : null;
-  const action = h('div', { class: 'action' });
+  const body = h('div', { class: 'body' });
   const row = h('div', { class: 'location' },
     h('div', {}, node && node.title ? h('strong', {}, node.title + ' ') : null,
       h('code', {}, `${location.document.name} ${pointer(location.path)}`)),
     h('div', {}, describe(location)),
-    action);
+    body);
 
-  const editable = location.document.name === 'data' && FIXABLE_TYPES.has(result.item.type);
-  const plan = editable ? planSwap(location, node, state.lookup)
-    : { fixable: false, reason: replacementNote(location) + ' This location is reported only; fix it in the item\'s own editor.' };
+  if (location.document.name !== 'data' || !FIXABLE_TYPES.has(result.item.type)) {
+    location.status = replacementNote(location) + ' This location is reported only; fix it in the item\'s own editor.';
+    body.append(location.status);
+    return row;
+  }
+  // The direct replacement may itself be deprecated; let the user step to it or jump to the latest.
+  const chain = replacementChain(location.candidates[0], state.lookup);
+  const show = (target) => body.replaceChildren(...renderSwap(result, location, node, target, target === chain[0]));
+  if (chain.length > 1) {
+    const step = (index) => (index === chain.length - 1 ? 'Latest version' : index === 0 ? 'Next version' : 'Later version');
+    const select = h('select', {}, chain.map((item, index) => h('option', {}, `${step(index)}: ${targetLabel(item)}`)));
+    select.addEventListener('change', () => show(chain[select.selectedIndex]));
+    row.insertBefore(h('label', {}, 'Replace with ', select), body);
+  }
+  show(chain[0]);
+  return row;
+}
+
+function renderSwap(result, location, node, target, direct) {
+  const run = (location.run = {});   // a later choice in the version picker supersedes this one
+  const action = h('div', { class: 'action' });
+  const plan = planSwap(location, node, state.lookup, target);
   location.status = plan.fixable ? 'Swap possible, schema not checked' : plan.reason;
   if (!plan.fixable) {
     action.append(plan.reason);
-    return row;
+    return [action];
   }
-  row.insertBefore(h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title), sourceNote(location.candidates[0])), action);
-  row.insertBefore(h('div', { class: 'change' }, plan.changes.map((change) => h('div', {}, `${change.key}: ${change.from} → ${change.to}`))), action);
+  const superseded = plan.replacement.deprecated || plan.replacement.newVersionId;
+  const parts = [
+    h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title), direct ? sourceNote(location.candidates[0]) : ''),
+    superseded ? h('div', { class: 'bad' }, `This replacement is itself deprecated${plan.replacement.retires ? ` and retires ${plan.replacement.retires}` : ''}.`) : null,
+    h('div', { class: 'change' }, plan.changes.map((change) => h('div', {}, `${change.key}: ${change.from} → ${change.to}`))),
+    action,
+  ].filter(Boolean);
   action.append('Comparing schemas…');
   const check = plan.sameService ? Promise.resolve({ same: true }) : schemaCheck(plan.oldUrl, plan.newUrl, state.session.token);
   check.then((schema) => {
+    if (location.run !== run) return;
     if (!schema.same) {
       location.status = 'Schema differs: ' + schema.problems.join('; ');
       action.replaceChildren(h('div', {}, h('span', { class: 'bad' }, 'Schema differs — not offered as a swap.'),
@@ -233,10 +264,11 @@ function renderLocation(result, location) {
     action.replaceChildren(h('span', { class: 'good' }, plan.sameService ? 'Same service; only the item ID changes.' : 'Same schema.'),
       h('label', {}, rename, ' Also rename layer to'), title, button);
   }).catch((error) => {
+    if (location.run !== run) return;
     location.status = 'Schema could not be compared: ' + error.message;
     action.replaceChildren(h('span', { class: 'bad' }, `Schema could not be compared (${error.message}) — not offered as a swap.`));
   });
-  return row;
+  return parts;
 }
 
 /** Say where the replacement came from when it is not simply the table's. */
@@ -250,8 +282,9 @@ function sourceNote(entry) {
 function replacementNote(location) {
   const entry = location.candidates[0];
   if (!entry.replacementIds.length) return entry.replacementNote + '.';
-  const replacement = state.lookup.items.get(entry.replacementIds[0]);
-  return `Replacement: ${replacement ? replacement.title : entry.replacementIds[0]} (${entry.replacementIds.join(', ')})${sourceNote(entry) || '.'}`;
+  const chain = replacementChain(entry, state.lookup);
+  const latest = chain.length > 1 ? ` Latest version: ${chain.at(-1).title} (${chain.at(-1).id}).` : '';
+  return `Replacement: ${chain[0] ? targetLabel(chain[0]) : entry.replacementIds[0]} (${entry.replacementIds.join(', ')})${sourceNote(entry) || '.'}${latest}`;
 }
 
 // ---- Apply one swap -----------------------------------------------------------------------
@@ -294,13 +327,14 @@ function download(name, text, type = 'application/json') {
 
 function exportCsv() {
   const cell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-  const rows = [['item_id', 'title', 'type', 'owner', 'sharing', 'document', 'location', 'retiring_ids', 'retiring_titles', 'replacement_ids', 'replacement_source', 'status']];
+  const rows = [['item_id', 'title', 'type', 'owner', 'sharing', 'document', 'location', 'retiring_ids', 'retiring_titles', 'replacement_ids', 'replacement_source', 'latest_version_id', 'status']];
   for (const { item, locations } of state.results) {
     for (const location of locations) {
       rows.push([item.id, item.title, item.type, item.owner, item.access, location.document.name, pointer(location.path),
         location.candidates.map((entry) => entry.id).join(' '), location.candidates.map((entry) => entry.title).join(' | '),
         [...new Set(location.candidates.flatMap((entry) => entry.replacementIds))].join(' '),
         [...new Set(location.candidates.filter((entry) => entry.replacementIds.length).map((entry) => entry.replacementSource))].join(' '),
+        replacementChain(location.candidates[0], state.lookup).at(-1)?.id || '',
         location.status || 'Not opened']);
     }
   }

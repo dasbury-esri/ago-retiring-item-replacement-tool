@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  serviceParts, parseReplacement, newVersionLink, buildLookup, findReferences, planSwap, applySwap, compareSchemas, nodeAt,
+  serviceParts, parseReplacement, newVersionLink, retirementDate, replacementChain, buildLookup, findReferences, planSwap, applySwap, compareSchemas, nodeAt,
 } from '../match.js';
 
 const OLD = 'a'.repeat(32), NEW = 'b'.repeat(32), TWIN = 'c'.repeat(32), GONE = 'd'.repeat(32);
@@ -118,6 +118,25 @@ test('description link wins unless only the table\'s replacement can be read', (
   assert.deepEqual([disagree.replacementIds, disagree.replacementSource, disagree.alternateId], [[NEW], 'description', GONE]);
   const agree = buildLookup([{ item_id: OLD, superceded_by: NEW }], readable([])).byId.get(OLD);
   assert.deepEqual([agree.replacementIds, agree.replacementSource, agree.alternateId], [[NEW], 'table', null]);
+});
+
+test('a deprecated replacement leads on to its newer version, and either can be the swap target', () => {
+  assert.equal(retirementDate('<p>in mature support and <b>will retire in December 2028</b>.</p>'), 'December 2028');
+  assert.equal(retirementDate('This item will be retired in December 2026.'), 'December 2026');
+  assert.equal(retirementDate('nothing'), null);
+  const LATEST_URL = 'https://x.svcs.arcgis.com/Org/arcgis/rest/services/States_view/FeatureServer';
+  const chained = buildLookup(
+    [{ item_id: OLD, superceded_by: NEW }],
+    new Map([[OLD, { id: OLD, url: OLD_URL }], [NEW, { id: NEW, url: NEW_URL, deprecated: true, newVersionId: TWIN }],
+      [TWIN, { id: TWIN, url: LATEST_URL, newVersionId: OLD }]]),   // a loop back must not run forever
+  );
+  const chain = replacementChain(chained.byId.get(OLD), chained);
+  assert.deepEqual(chain.map((item) => item.id), [NEW, TWIN]);
+  const doc = { layers: [{ itemId: OLD, url: OLD_URL + '/3' }] };
+  const [location] = findReferences(doc, chained);
+  assert.equal(planSwap(location, nodeAt(doc, location.path), chained).newUrl, NEW_URL + '/3');
+  const latest = planSwap(location, nodeAt(doc, location.path), chained, chain[1]);
+  assert.deepEqual([latest.newUrl, latest.changes[1].to], [LATEST_URL + '/3', TWIN]);
 });
 
 test('schema comparison', () => {

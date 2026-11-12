@@ -42,6 +42,29 @@ export function newVersionLink(description, ownId) {
   return ids.size === 1 ? [...ids][0] : null;
 }
 
+/** The date in Esri's retirement notice ("will retire in December 2028"), or null. */
+export function retirementDate(description) {
+  const text = String(description || '').replace(/<[^>]+>/g, ' ');
+  const match = /will\s+(?:be\s+)?retired?\s+in\s+((?:[A-Z][a-z]+\s+)?\d{4})/.exec(text);
+  return match ? match[1].replace(/\s+/g, ' ') : null;
+}
+
+/**
+ * A replacement can itself be deprecated and link to a newer version. Returns the direct
+ * replacement first, then each newer version in turn; the last entry is the most current.
+ */
+export function replacementChain(entry, lookup) {
+  const chain = [];
+  const seen = new Set([entry.id]);
+  let id = entry.replacementIds.length === 1 ? entry.replacementIds[0] : null;
+  while (id && !seen.has(id) && lookup.items.has(id) && chain.length < 6) {
+    seen.add(id);
+    chain.push(lookup.items.get(id));
+    id = chain.at(-1).newVersionId;
+  }
+  return chain;
+}
+
 /**
  * The replacement is the "new version" link in the retiring item's description when there is
  * one, otherwise the table's. The table wins only when the description's item cannot be read
@@ -136,16 +159,17 @@ export function nodeAt(doc, path) {
 /**
  * Decide whether a location can be fixed by swapping item ID and service URL.
  * Returns { fixable: false, reason } or { fixable: true, replacement, oldUrl, newUrl, changes }.
+ * target picks a later item from replacementChain(); the default is the direct replacement.
  * Schema compatibility is checked separately, against the live services.
  */
-export function planSwap(location, node, lookup) {
+export function planSwap(location, node, lookup, target) {
   const no = (reason) => ({ fixable: false, reason });
   const targets = new Set(location.candidates.map((entry) => entry.replacementIds.join(',')));
   if (targets.size !== 1) return no('Several retiring items share this service URL and they have different replacements.');
   const sample = location.candidates[0];
   if (sample.replacementIds.length === 0) return no(sample.replacementNote);
   if (sample.replacementIds.length > 1) return no('The table lists more than one replacement; choose manually.');
-  const replacement = lookup.items.get(sample.replacementIds[0]);
+  const replacement = target || lookup.items.get(sample.replacementIds[0]);
   if (!replacement) return no('The replacement item could not be read.');
   if (!node || typeof node.url !== 'string') return no('No service URL at this location to swap.');
   const oldParts = serviceParts(node.url);

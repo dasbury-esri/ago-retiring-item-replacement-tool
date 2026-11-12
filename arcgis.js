@@ -1,6 +1,6 @@
 // ArcGIS REST calls. Uses global fetch, so it also runs under Node for checks.
 import { PORTAL, RETIREMENT_TABLE } from './config.js';
-import { buildLookup, compareSchemas, newVersionLink, parseReplacement, serviceParts } from './match.js';
+import { buildLookup, compareSchemas, newVersionLink, parseReplacement, retirementDate, serviceParts } from './match.js';
 
 const SHARING = PORTAL + '/sharing/rest';
 
@@ -56,7 +56,8 @@ async function publicItems(ids) {
     const page = await request(`${SHARING}/search`, { q: `id:(${batch.join(' OR ')})`, num: 100 });
     for (const item of page.results) {
       items.set(item.id, { id: item.id, title: item.title, type: item.type, url: item.url,
-        newVersionId: newVersionLink(item.description, item.id) });
+        newVersionId: newVersionLink(item.description, item.id),
+        deprecated: item.contentStatus === 'deprecated', retires: retirementDate(item.description) });
     }
   });
   return items;
@@ -65,14 +66,17 @@ async function publicItems(ids) {
 export async function loadLookup() {
   const rows = await retirementRows();
   const items = await publicItems(rows.map((row) => row.item_id));
-  const replacements = new Set();
-  for (const row of rows) {
-    parseReplacement(row.superceded_by).ids.forEach((id) => replacements.add(id));
-    const linked = items.get(row.item_id)?.newVersionId;
-    if (linked) replacements.add(linked);
+  // Replacements, then the replacements' own newer versions, until nothing new turns up.
+  const asked = new Set(items.keys());
+  let wanted = rows.flatMap((row) => parseReplacement(row.superceded_by).ids);
+  for (let round = 0; round < 6; round += 1) {
+    for (const item of items.values()) if (item.newVersionId) wanted.push(item.newVersionId);
+    const missing = [...new Set(wanted)].filter((id) => !asked.has(id));
+    if (!missing.length) break;
+    missing.forEach((id) => asked.add(id));
+    for (const [id, item] of await publicItems(missing)) items.set(id, item);
+    wanted = [];
   }
-  const missing = [...replacements].filter((id) => !items.has(id));
-  for (const [id, item] of await publicItems(missing)) items.set(id, item);
   const lookup = buildLookup(rows, items);
   lookup.unresolved = rows.filter((row) => !lookup.items.has(row.item_id)).length;
   return lookup;

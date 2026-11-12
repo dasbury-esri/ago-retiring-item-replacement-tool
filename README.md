@@ -14,6 +14,10 @@ A static browser app. No backend, no build step, no dependencies.
    service type with the same schema, offers a swap of item ID and service URL, with an optional
    layer rename. Everything else is reported with its location and the listed replacement.
 
+A replacement can itself be deprecated and link to a newer version. The tool says so, and where
+a newer version exists it offers a choice between the next version and the latest; each choice
+gets its own schema check.
+
 ## Where references are looked for
 
 | Item type | Read |
