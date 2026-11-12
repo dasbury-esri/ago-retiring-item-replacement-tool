@@ -6,11 +6,13 @@ export const RETIREMENT_TABLE =
   'https://P3ePLMYs2RVChkJx.svcs.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Esri_Items_Retiring_in_December_2026/FeatureServer/0';
 
 // Corrections to "new version" links in Esri item descriptions: item ID -> the item it should
-// link to, or null when the link points at an unrelated item and the right one is not known.
+// link to (or null to ignore a wrong link when the right item is not known).
 // Remove an entry once the description is fixed.
 export const LINK_FIXES = {
   // United States County Boundaries: its retirement notice links the Country item (508e141c...).
   '36a7fa832aea4b7e8266a8d983afa4ac': '12f0d81d2d664af7b9961d316ce26556',
-  '273980c20bc74f94ac96c7892ec15aff': null,   // World Linear Water links "USA States"
-  '8d2012a2016e484dafaac0451f9aea24': null,   // USA ZIP Code Areas links "Armenia Marzer Boundaries"
+  // World Linear Water [Layer Package]: its notice links "USA States".
+  '273980c20bc74f94ac96c7892ec15aff': 'c63ed789019a4e6a9ce948621371c7bc',
+  // USA ZIP Code Areas [Layer Package]: its notice links "Armenia Marzer Boundaries".
+  '8d2012a2016e484dafaac0451f9aea24': '91c6859151e84a2eacb0cfb1e38466ca',
 };
