@@ -56,7 +56,7 @@ async function publicItems(ids) {
     const page = await request(`${SHARING}/search`, { q: `id:(${batch.join(' OR ')})`, num: 100 });
     for (const item of page.results) {
       items.set(item.id, { id: item.id, title: item.title, type: item.type, url: item.url,
-        newVersionId: LINK_FIXES[item.id] || newVersionLink(item.description, item.id),
+        newVersionId: item.id in LINK_FIXES ? LINK_FIXES[item.id] : newVersionLink(item.description, item.id),
         deprecated: item.contentStatus === 'deprecated', retires: retirementDate(item.description) });
     }
   });
