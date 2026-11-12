@@ -24,6 +24,15 @@ export async function pool(items, size, fn) {
 
 export const portalSelf = (token) => request(`${SHARING}/portals/self`, { token });
 
+/** Yield the organization's members (first 10,000), for the owner filter. */
+export async function* orgUsers(token) {
+  for (let start = 1; start > 0 && start <= 10000;) {
+    const page = await request(`${SHARING}/portals/self/users`, { token, start, num: 100, sortField: 'username' });
+    yield* page.users;
+    start = page.nextStart;
+  }
+}
+
 // ---- Step a: retirement table -> lookup of IDs and service URLs --------------------------
 
 async function retirementRows() {
@@ -93,15 +102,21 @@ async function text(url, token) {
 
 export const itemData = (id, token) => text(`${SHARING}/content/items/${id}/data`, token);
 
-/** JSON resources of an item (StoryMap drafts, Experience Builder drafts), capped at 20 files. */
+const RESOURCE_LIMIT = 200;
+
+/** JSON resources of an item (StoryMap and Experience Builder drafts and saved versions). */
 export async function jsonResources(id, token) {
-  const listing = await request(`${SHARING}/content/items/${id}/resources`, { token, num: 100 });
-  const names = (listing.resources || []).map((entry) => entry.resource).filter((name) => /\.json$/i.test(name));
+  const names = [];
+  for (let start = 1; start > 0;) {
+    const listing = await request(`${SHARING}/content/items/${id}/resources`, { token, start, num: 100 });
+    for (const entry of listing.resources || []) if (/\.json$/i.test(entry.resource)) names.push(entry.resource);
+    start = listing.nextStart || -1;
+  }
   const documents = [];
-  for (const name of names.slice(0, 20)) {
+  for (const name of names.slice(0, RESOURCE_LIMIT)) {
     documents.push({ name, text: await text(`${SHARING}/content/items/${id}/resources/${name.split('/').map(encodeURIComponent).join('/')}`, token) });
   }
-  return { documents, skipped: Math.max(0, names.length - 20) };
+  return { documents, skipped: Math.max(0, names.length - RESOURCE_LIMIT), limit: RESOURCE_LIMIT };
 }
 
 // ---- Step c: compare services and write the fix ------------------------------------------

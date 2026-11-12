@@ -1,7 +1,7 @@
 import { CLIENT_ID } from './config.js';
 import { currentSession, signIn, signOut } from './auth.js';
 import {
-  itemData, jsonResources, loadLookup, pool, portalSelf, schemaCheck, searchItems, updateItemData,
+  itemData, jsonResources, loadLookup, orgUsers, pool, portalSelf, schemaCheck, searchItems, updateItemData,
 } from './arcgis.js';
 import { FIXABLE_TYPES, applySwap, findReferences, nodeAt, planSwap, pointer } from './match.js';
 
@@ -18,13 +18,14 @@ function h(tag, attrs = {}, ...children) {
   const element = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
     if (key.startsWith('on')) element.addEventListener(key.slice(2), value);
-    else if (key in element) element[key] = value;
+    else if (key in element && key !== 'list') element[key] = value;   // input.list is read-only
     else element.setAttribute(key, value);
   }
   element.append(...children.flat().filter((child) => child != null));
   return element;
 }
 const status = (message) => { $('status').textContent = message; };
+const count = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 const itemLink = (id, label) => h('a', {
   href: `https://${state.self.urlKey}.${state.self.customBaseUrl}/home/item.html?id=${id}`, target: '_blank', rel: 'noopener',
 }, label || id);
@@ -46,11 +47,22 @@ async function start() {
   status('Loading your account and the retirement list…');
   [state.self, state.lookup] = await Promise.all([portalSelf(state.session.token), loadLookup()]);
   const user = state.self.user;
-  state.admin = user.role === 'org_admin' || (user.privileges || []).includes('portal:admin:viewItems');
+  // The owner filter is for people who can also fix other members' items.
+  state.admin = user.role === 'org_admin' || (user.privileges || []).includes('portal:admin:updateItems');
   $('account').replaceChildren(`${user.username}${state.admin ? ' (administrator)' : ''} · ${state.self.name} `,
     h('button', { onclick: signOut }, 'Sign out'));
-  status(`${state.lookup.byId.size} retiring items loaded, ${state.lookup.byUrl.size} distinct service URLs.`);
+  status(`${count(state.lookup.byId.size, 'retiring item')} loaded, ${count(state.lookup.byUrl.size, 'distinct service URL')}.`);
   buildFilters();
+  if (state.admin) loadOwners();
+}
+
+/** Fill the owner picker in the background. If members cannot be listed, the box still accepts a typed username. */
+async function loadOwners() {
+  try {
+    for await (const user of orgUsers(state.session.token)) {
+      $('owners').append(h('option', { value: user.username, label: user.fullName || '' }));
+    }
+  } catch { /* typed usernames still work */ }
 }
 
 function buildFilters() {
@@ -58,10 +70,11 @@ function buildFilters() {
   $('filters').replaceChildren(
     h('div', { class: 'row' },
       state.admin
-        ? h('label', {}, 'Owner ', h('input', { type: 'text', name: 'owner', placeholder: 'blank = whole organization' }))
+        ? h('label', {}, 'Owner ', h('input', { type: 'text', name: 'owner', list: 'owners', placeholder: 'blank = whole organization' }),
+          h('datalist', { id: 'owners' }))
         : h('span', {}, 'Scanning content you own.'),
       h('label', {}, 'Sharing ', h('select', { name: 'access' },
-        ...[['', 'Any'], ['private', 'Private'], ['shared', 'Groups'], ['org', 'Organization'], ['public', 'Public']]
+        ...[['', 'Any'], ['private', 'Private'], ['shared', 'Groups only'], ['org', 'Organization'], ['public', 'Public']]
           .map(([value, label]) => h('option', { value }, label)))),
       h('label', {}, 'Title or tag contains ', h('input', { type: 'text', name: 'text' }))),
     h('fieldset', {}, h('legend', {}, 'Item types (item data is read)'), DATA_TYPES.map(check)),
@@ -94,8 +107,8 @@ async function scan() {
   $('results').replaceChildren();
   $('scan').disabled = true;
   $('stop').disabled = false;
-  const progress = () => status(`Scanned ${state.scanned} items — ${state.results.length} affected` +
-    (state.unread.length ? `, ${state.unread.length} could not be read` : '') + (state.stop ? ' (stopping…)' : '…'));
+  const progress = () => status(`Scanned ${count(state.scanned, 'item')} — ${state.results.length} affected` +
+    (state.unread.length ? `, ${state.unread.length} not fully read` : '') + (state.stop ? ' (stopping…)' : '…'));
   try {
     let batch = [];
     const flush = async () => {
@@ -114,8 +127,8 @@ async function scan() {
       if (batch.length >= 60) await flush();
     }
     await flush();
-    status(`${state.stop ? 'Stopped' : 'Done'}: ${state.scanned} items scanned, ${state.results.length} affected` +
-      (state.unread.length ? `, ${state.unread.length} could not be read (listed below; not confirmed clean)` : '') + '.');
+    status(`${state.stop ? 'Stopped' : 'Done'}: ${count(state.scanned, 'item')} scanned, ${state.results.length} affected` +
+      (state.unread.length ? `, ${state.unread.length} not fully read (listed below; not confirmed clean)` : '') + '.');
   } catch (error) {
     status('Scan failed: ' + error.message);
   }
@@ -134,7 +147,7 @@ async function scanItem(item) {
     if (RESOURCE_TYPES.has(item.type)) {
       const resources = await jsonResources(item.id, state.session.token);
       for (const entry of resources.documents) documents.push({ name: entry.name, doc: parse(entry.text) });
-      if (resources.skipped) state.unread.push({ item, reason: `${resources.skipped} resource files beyond the first 20 were not read` });
+      if (resources.skipped) state.unread.push({ item, reason: `${count(resources.skipped, 'resource file')} beyond the first ${resources.limit} not read` });
     }
   } catch (error) {
     state.unread.push({ item, reason: error.message });
@@ -154,10 +167,10 @@ function parse(text) {
 // ---- Results ------------------------------------------------------------------------------
 
 function renderSummary() {
-  const unread = state.unread.length ? h('details', {}, h('summary', {}, `${state.unread.length} items could not be fully read`),
+  const unread = state.unread.length ? h('details', {}, h('summary', {}, `${count(state.unread.length, 'item')} could not be fully read`),
     h('ul', {}, state.unread.map(({ item, reason }) => h('li', {}, itemLink(item.id, item.title), ` — ${reason}`)))) : null;
   $('results').prepend(h('div', { class: 'summary' },
-    h('strong', {}, `${state.results.length} affected items`),
+    h('strong', {}, count(state.results.length, 'affected item')),
     state.results.length ? h('button', { onclick: exportCsv }, 'Export CSV') : null), unread || '');
 }
 
@@ -166,7 +179,7 @@ function renderItem(result) {
   const details = h('details', { class: 'item' },
     h('summary', {},
       h('span', { class: 'title' }, item.title),
-      h('span', { class: 'meta' }, `${item.type} · ${item.owner} · ${item.access} · ${locations.length} reference${locations.length === 1 ? '' : 's'}`)),
+      h('span', { class: 'meta' }, `${item.type} · ${item.owner} · ${item.access} · ${count(locations.length, 'reference')}`)),
     h('div', { class: 'location' }, itemLink(item.id, 'Open item page')));
   details.addEventListener('toggle', () => {
     if (!details.open || details.dataset.filled) return;

@@ -16,7 +16,7 @@ A static browser app. No backend, no build step, no dependencies.
 | Item type | Read |
 | --- | --- |
 | Web Map, Web Scene, Group Layer, Dashboard, Web Mapping Application, Hub Site Application, Hub Page, Notebook | item data |
-| StoryMap, Web Experience | item data and up to 20 JSON resources (drafts) |
+| StoryMap, Web Experience | item data and up to 200 JSON resources (drafts and saved versions) |
 | Map, Feature, Image, Vector Tile and Scene Service items | the item's own URL |
 
 Other item types are not scanned. Items that could not be read are listed after a scan; they are
