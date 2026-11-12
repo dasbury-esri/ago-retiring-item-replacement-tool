@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  serviceParts, parseReplacement, buildLookup, findReferences, planSwap, applySwap, compareSchemas, nodeAt,
+  serviceParts, parseReplacement, newVersionLink, buildLookup, findReferences, planSwap, applySwap, compareSchemas, nodeAt,
 } from '../match.js';
 
 const OLD = 'a'.repeat(32), NEW = 'b'.repeat(32), TWIN = 'c'.repeat(32), GONE = 'd'.repeat(32);
@@ -99,6 +99,20 @@ test('self-replacement is not a swap; same-service replacement changes only the 
   assert.match(self.reason, /its own replacement/);
   assert.deepEqual(twin.changes, [{ key: 'itemId', from: TWIN, to: NEW }]);
   assert.match(already.reason, /already points at the replacement/);
+});
+
+test('description link fills a missing replacement; the table wins when both exist', () => {
+  const notice = (id) => `<p><strong>Retirement Notice:</strong> A <a target='_blank' href='https://www.arcgis.com/home/item.html?id=${id}'><strong>new version of this item</strong></a> is available. See <a href='https://www.arcgis.com/home/item.html?id=${GONE}'>related data</a>.</p>`;
+  assert.equal(newVersionLink(notice(NEW), OLD), NEW);
+  assert.equal(newVersionLink(notice(OLD), OLD), null);
+  assert.equal(newVersionLink('no links here', OLD), null);
+  const filled = buildLookup(
+    [{ item_id: OLD, superceded_by: 'Coming soon' }, { item_id: TWIN, superceded_by: TWIN }, { item_id: GONE, superceded_by: OLD }],
+    new Map([[OLD, { newVersionId: NEW }], [TWIN, { newVersionId: NEW }], [GONE, { newVersionId: NEW }]]),
+  );
+  assert.deepEqual([filled.byId.get(OLD).replacementIds, filled.byId.get(OLD).replacementSource], [[NEW], 'description']);
+  assert.deepEqual(filled.byId.get(TWIN).replacementIds, [NEW]);
+  assert.deepEqual([filled.byId.get(GONE).replacementIds, filled.byId.get(GONE).alternateId], [[OLD], NEW]);
 });
 
 test('schema comparison', () => {

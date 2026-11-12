@@ -30,6 +30,21 @@ export function parseReplacement(value) {
 }
 
 /**
+ * Esri's retirement notice in an item description links "a new version of this item".
+ * Returns that item's ID when the description holds exactly one such link.
+ */
+export function newVersionLink(description, ownId) {
+  const anchors = /<a\b[^>]*href=['"][^'"]*?\b([0-9a-f]{32})\b[^'"]*['"][^>]*>([\s\S]*?)<\/a>/gi;
+  const ids = new Set();
+  for (const [, id, label] of String(description || '').matchAll(anchors)) {
+    if (/new\s+version/i.test(label.replace(/<[^>]+>/g, '')) && id.toLowerCase() !== ownId) ids.add(id.toLowerCase());
+  }
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
+/**
+ * The replacement comes from the table; where the table has none, from the "new version" link
+ * in the retiring item's description.
  * @param rows   attributes from Esri's retirement table
  * @param items  Map of item id -> item metadata (retiring items and their replacements)
  */
@@ -43,9 +58,16 @@ export function buildLookup(rows, items) {
       replacement.ids = [];
       replacement.note = "Esri's table lists this item as its own replacement, so there is nothing different to swap to";
     }
+    const linked = meta.newVersionId || null;
+    const fromDescription = !replacement.ids.length && linked;
+    if (fromDescription) replacement.ids = [linked];
     const entry = {
       id: row.item_id, title: row.title, type: row.item_type, owner: row.owner,
       url: meta.url || null, replacementIds: replacement.ids, replacementNote: replacement.note,
+      tableText: String(row.superceded_by || '').trim(),
+      replacementSource: fromDescription ? 'description' : 'table',
+      // set when the table and the description name different replacements; the table's is used
+      alternateId: !fromDescription && replacement.ids.length === 1 && linked && linked !== replacement.ids[0] ? linked : null,
     };
     byId.set(entry.id, entry);
     const parts = serviceParts(entry.url);

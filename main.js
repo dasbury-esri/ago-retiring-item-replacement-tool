@@ -213,7 +213,7 @@ function renderLocation(result, location) {
     action.append(plan.reason);
     return row;
   }
-  row.insertBefore(h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title)), action);
+  row.insertBefore(h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title), sourceNote(location.candidates[0])), action);
   row.insertBefore(h('div', { class: 'change' }, plan.changes.map((change) => h('div', {}, `${change.key}: ${change.from} → ${change.to}`))), action);
   action.append('Comparing schemas…');
   const check = plan.sameService ? Promise.resolve({ same: true }) : schemaCheck(plan.oldUrl, plan.newUrl, state.session.token);
@@ -239,11 +239,19 @@ function renderLocation(result, location) {
   return row;
 }
 
+/** Say where the replacement came from when it is not simply the table's. */
+function sourceNote(entry) {
+  if (entry.replacementSource === 'description') {
+    return ` — taken from the "new version" link in the retiring item's description; Esri's table says "${entry.tableText}".`;
+  }
+  return entry.alternateId ? ` — note: the retiring item's description links a different item (${entry.alternateId}).` : '';
+}
+
 function replacementNote(location) {
   const entry = location.candidates[0];
   if (!entry.replacementIds.length) return entry.replacementNote + '.';
   const replacement = state.lookup.items.get(entry.replacementIds[0]);
-  return `Replacement: ${replacement ? replacement.title : entry.replacementIds[0]} (${entry.replacementIds.join(', ')}).`;
+  return `Replacement: ${replacement ? replacement.title : entry.replacementIds[0]} (${entry.replacementIds.join(', ')})${sourceNote(entry) || '.'}`;
 }
 
 // ---- Apply one swap -----------------------------------------------------------------------
@@ -286,12 +294,13 @@ function download(name, text, type = 'application/json') {
 
 function exportCsv() {
   const cell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-  const rows = [['item_id', 'title', 'type', 'owner', 'sharing', 'document', 'location', 'retiring_ids', 'retiring_titles', 'replacement_ids', 'status']];
+  const rows = [['item_id', 'title', 'type', 'owner', 'sharing', 'document', 'location', 'retiring_ids', 'retiring_titles', 'replacement_ids', 'replacement_source', 'status']];
   for (const { item, locations } of state.results) {
     for (const location of locations) {
       rows.push([item.id, item.title, item.type, item.owner, item.access, location.document.name, pointer(location.path),
         location.candidates.map((entry) => entry.id).join(' '), location.candidates.map((entry) => entry.title).join(' | '),
         [...new Set(location.candidates.flatMap((entry) => entry.replacementIds))].join(' '),
+        [...new Set(location.candidates.filter((entry) => entry.replacementIds.length).map((entry) => entry.replacementSource))].join(' '),
         location.status || 'Not opened']);
     }
   }

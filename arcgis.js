@@ -1,6 +1,6 @@
 // ArcGIS REST calls. Uses global fetch, so it also runs under Node for checks.
 import { PORTAL, RETIREMENT_TABLE } from './config.js';
-import { buildLookup, compareSchemas, parseReplacement, serviceParts } from './match.js';
+import { buildLookup, compareSchemas, newVersionLink, parseReplacement, serviceParts } from './match.js';
 
 const SHARING = PORTAL + '/sharing/rest';
 
@@ -54,16 +54,26 @@ async function publicItems(ids) {
   for (let i = 0; i < ids.length; i += 50) batches.push(ids.slice(i, i + 50));
   await pool(batches, 4, async (batch) => {
     const page = await request(`${SHARING}/search`, { q: `id:(${batch.join(' OR ')})`, num: 100 });
-    for (const item of page.results) items.set(item.id, { id: item.id, title: item.title, type: item.type, url: item.url });
+    for (const item of page.results) {
+      items.set(item.id, { id: item.id, title: item.title, type: item.type, url: item.url,
+        newVersionId: newVersionLink(item.description, item.id) });
+    }
   });
   return items;
 }
 
 export async function loadLookup() {
   const rows = await retirementRows();
-  const ids = new Set(rows.map((row) => row.item_id));
-  for (const row of rows) parseReplacement(row.superceded_by).ids.forEach((id) => ids.add(id));
-  const lookup = buildLookup(rows, await publicItems([...ids]));
+  const items = await publicItems(rows.map((row) => row.item_id));
+  const replacements = new Set();
+  for (const row of rows) {
+    parseReplacement(row.superceded_by).ids.forEach((id) => replacements.add(id));
+    const linked = items.get(row.item_id)?.newVersionId;
+    if (linked) replacements.add(linked);
+  }
+  const missing = [...replacements].filter((id) => !items.has(id));
+  for (const [id, item] of await publicItems(missing)) items.set(id, item);
+  const lookup = buildLookup(rows, items);
   lookup.unresolved = rows.filter((row) => !lookup.items.has(row.item_id)).length;
   return lookup;
 }
