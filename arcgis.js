@@ -57,6 +57,7 @@ async function publicItems(ids) {
     for (const item of page.results) {
       items.set(item.id, { id: item.id, title: item.title, type: item.type, url: item.url,
         newVersionId: item.id in LINK_FIXES ? LINK_FIXES[item.id] : newVersionLink(item.description, item.id),
+        similarId: newVersionLink(item.description, item.id, /similar\s+item/i),
         deprecated: item.contentStatus === 'deprecated', retires: retirementDate(item.description) });
     }
   });
@@ -70,7 +71,7 @@ export async function loadLookup() {
   const asked = new Set(items.keys());
   let wanted = rows.flatMap((row) => parseReplacement(row.superceded_by).ids);
   for (let round = 0; round < 6; round += 1) {
-    for (const item of items.values()) if (item.newVersionId) wanted.push(item.newVersionId);
+    for (const item of items.values()) wanted.push(...[item.newVersionId, item.similarId].filter(Boolean));
     const missing = [...new Set(wanted)].filter((id) => !asked.has(id));
     if (!missing.length) break;
     missing.forEach((id) => asked.add(id));
@@ -83,6 +84,13 @@ export async function loadLookup() {
 }
 
 // ---- Step b: find the content to scan ----------------------------------------------------
+
+/** How many items of each type a query matches: Map of lower-case type name -> count. */
+export async function typeCounts(q, token) {
+  const page = await request(`${SHARING}/search`, { q, token, num: 0, countFields: 'type', countSize: 200 });
+  const values = page.aggregations?.counts?.[0]?.fieldValues || [];
+  return new Map(values.map((entry) => [entry.value, entry.count]));
+}
 
 const stamp = (ms) => String(ms).padStart(19, '0');
 
@@ -115,6 +123,25 @@ async function text(url, token) {
 }
 
 export const itemData = (id, token) => text(`${SHARING}/content/items/${id}/data`, token);
+
+export const DATA_LIMIT = 30 * 1024 * 1024;
+
+/** An item's data as bytes, or { tooLarge: bytes } without downloading it when it is over the limit. */
+export async function itemBytes(id, token) {
+  const response = await fetch(`${SHARING}/content/items/${id}/data` + (token ? `?token=${encodeURIComponent(token)}` : ''));
+  const length = Number(response.headers.get('content-length'));
+  if (length > DATA_LIMIT) {
+    await response.body?.cancel();
+    return { tooLarge: length };
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > DATA_LIMIT) return { tooLarge: bytes.length };
+  if (bytes.length < 2000 && bytes[0] === 0x7b) {
+    const body = JSON.parse(new TextDecoder().decode(bytes) || '{}');
+    if (body.error) throw new Error(body.error.message || 'ArcGIS error');
+  }
+  return { bytes };
+}
 
 const RESOURCE_LIMIT = 200;
 

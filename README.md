@@ -20,14 +20,29 @@ gets its own schema check.
 
 ## Where references are looked for
 
-| Item type | Read |
-| --- | --- |
-| Web Map, Web Scene, Group Layer, Dashboard, Web Mapping Application, Hub Site Application, Hub Page, Notebook | item data |
-| StoryMap, Web Experience | item data and up to 200 JSON resources (drafts and saved versions) |
-| Map, Feature, Image, Vector Tile and Scene Service items | the item's own URL |
+The scanner does not need to know each item type's storage format in advance. For every item it
+checks the item URL, then downloads the item data and looks at what it actually is:
 
-Other item types are not scanned. Items that could not be read are listed after a scan; they are
-not confirmed clean.
+| The item data is | What happens |
+| --- | --- |
+| JSON or other text (web maps, scenes, apps, dashboards, notebooks, most types) | read in full |
+| a zip file (Survey123 forms, 360 VR experiences, KMZ) | text files inside are read |
+| a 7z archive or other binary | listed as not read |
+| larger than 30 MB | not downloaded; listed as not read |
+
+StoryMap, Web Experience, Web Experience Template and QuickCapture Project items also have their
+JSON resources read (drafts and saved versions, up to 200 files).
+
+The type picker lists only the item types that exist in the content being scanned, grouped by
+kind, with counts. `types.js` holds the grouping and the types left out of a scan: data files and
+packages that carry their own data (CSV, shapefile, tile packages, PDF, Office files and so on),
+and formats a browser cannot open (service definitions, map, layer and project packages,
+CityEngine web scenes). A type the file does not mention is still offered, under "Other types".
+
+A retirement notice that links "a similar item" instead of a new version means there is no
+one-to-one replacement. The tool shows that link as information and does not offer a swap to it.
+
+Items that could not be read are listed after a scan; they are not confirmed clean.
 
 ## What "same schema" means
 

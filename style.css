@@ -12,6 +12,11 @@ a { color: inherit; }
 #filters .row { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
 #filters fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; }
 #filters legend { font-weight: 600; padding: 0; margin-bottom: 4px; }
+#filters details.group { border-top: 1px solid var(--soft); padding-top: 8px; display: grid; gap: 6px; }
+#filters details.group > summary { cursor: pointer; }
+#filters details.group > * + * { margin-top: 6px; }
+#filters details.group p { margin: 0; }
+#filters button[type=button] { font-size: .85em; padding: 2px 8px; }
 
 .summary { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 16px 0 8px; }
 details.item { border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; }

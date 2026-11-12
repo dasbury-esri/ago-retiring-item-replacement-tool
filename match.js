@@ -31,13 +31,14 @@ export function parseReplacement(value) {
 
 /**
  * Esri's retirement notice in an item description links "a new version of this item".
- * Returns that item's ID when the description holds exactly one such link.
+ * Returns that item's ID when the description holds exactly one such link. Some notices link
+ * "a similar item" instead, meaning there is no one-to-one replacement; pass that as label.
  */
-export function newVersionLink(description, ownId) {
+export function newVersionLink(description, ownId, label = /new\s+version/i) {
   const anchors = /<a\b[^>]*href=['"][^'"]*?\b([0-9a-f]{32})\b[^'"]*['"][^>]*>([\s\S]*?)<\/a>/gi;
   const ids = new Set();
-  for (const [, id, label] of String(description || '').matchAll(anchors)) {
-    if (/new\s+version/i.test(label.replace(/<[^>]+>/g, '')) && id.toLowerCase() !== ownId) ids.add(id.toLowerCase());
+  for (const [, id, text] of String(description || '').matchAll(anchors)) {
+    if (label.test(text.replace(/<[^>]+>/g, '')) && id.toLowerCase() !== ownId) ids.add(id.toLowerCase());
   }
   return ids.size === 1 ? [...ids][0] : null;
 }

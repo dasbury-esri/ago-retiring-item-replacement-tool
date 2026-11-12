@@ -1,15 +1,12 @@
 import { CLIENT_ID } from './config.js';
 import { currentSession, signIn, signOut } from './auth.js';
 import {
-  itemData, jsonResources, loadLookup, orgUsers, pool, portalSelf, schemaCheck, searchItems, updateItemData,
+  DATA_LIMIT, itemBytes, itemData, jsonResources, loadLookup, orgUsers, pool, portalSelf, schemaCheck, searchItems,
+  typeCounts, updateItemData,
 } from './arcgis.js';
+import { readContent } from './content.js';
 import { FIXABLE_TYPES, applySwap, findReferences, nodeAt, planSwap, pointer, replacementChain } from './match.js';
-
-// Where each item type keeps its references.
-const DATA_TYPES = ['Web Map', 'Web Scene', 'Group Layer', 'StoryMap', 'Dashboard', 'Web Experience',
-  'Web Mapping Application', 'Hub Site Application', 'Hub Page', 'Notebook'];   // item data
-const RESOURCE_TYPES = new Set(['StoryMap', 'Web Experience']);                  // plus JSON resources (drafts)
-const URL_TYPES = ['Map Service', 'Feature Service', 'Image Service', 'Vector Tile Service', 'Scene Service']; // item URL only
+import { GROUPS, NOT_SCANNED, RESOURCE_TYPES, isKnownType, isScanned } from './types.js';
 
 const $ = (id) => document.getElementById(id);
 const state = { session: null, self: null, lookup: null, results: [], unread: [], scanned: 0, stop: false };
@@ -52,7 +49,10 @@ async function start() {
   $('account').replaceChildren(`${user.username}${state.admin ? ' (administrator)' : ''} · ${state.self.name} `,
     h('button', { onclick: signOut }, 'Sign out'));
   status(`${count(state.lookup.byId.size, 'retiring item')} loaded, ${count(state.lookup.byUrl.size, 'distinct service URL')}.`);
-  buildFilters();
+  // Offer only the item types that exist in the content this person can scan.
+  const scope = state.admin ? `orgid:${state.self.id}` : `owner:"${user.username}"`;
+  const counts = await typeCounts(scope, state.session.token).then((found) => (found.size ? found : null), () => null);
+  buildFilters(counts);
   if (state.admin) loadOwners();
 }
 
@@ -65,8 +65,32 @@ async function loadOwners() {
   } catch { /* typed usernames still work */ }
 }
 
-function buildFilters() {
-  const check = (type) => h('label', {}, h('input', { type: 'checkbox', name: 'type', value: type, checked: true }), ' ' + type);
+/** One collapsible group of type checkboxes with its own all/none buttons. */
+function typeGroup(label, note, types, counts) {
+  const boxes = types.map((type) => h('input', { type: 'checkbox', name: 'type', value: type, checked: true }));
+  const set = (on) => () => boxes.forEach((box) => { box.checked = on; });
+  return h('details', { class: 'group', open: true },
+    h('summary', {}, h('strong', {}, label), h('span', { class: 'meta' }, ` — reads ${note}`)),
+    h('div', { class: 'row' },
+      h('button', { type: 'button', onclick: set(true) }, 'All'), h('button', { type: 'button', onclick: set(false) }, 'None')),
+    h('fieldset', {}, boxes.map((box, index) => h('label', {}, box, ` ${types[index]}`,
+      counts ? h('span', { class: 'meta' }, ` ${(counts.get(types[index].toLowerCase()) || 0).toLocaleString()}`) : null))));
+}
+
+/**
+ * counts: how many items of each type the signed-in user can scan, or null if that could not be
+ * read. With counts, only types that exist in the content are offered.
+ */
+function buildFilters(counts) {
+  const present = (type) => !counts || counts.has(type.toLowerCase());
+  const groups = GROUPS.map((group) => typeGroup(group.label, group.note, group.types.filter(present), counts))
+    .filter((group) => group.querySelector('input'));
+  const other = counts ? [...counts.keys()].filter((type) => type && !isKnownType(type)).sort() : [];
+  if (other.length) groups.push(typeGroup('Other types', 'item data when it is text or a zip file', other, counts));
+  const skipped = NOT_SCANNED.map((group) => ({ ...group, types: group.types.filter((type) => counts && counts.has(type.toLowerCase())) }))
+    .filter((group) => group.types.length);
+  const setAll = (on) => () => $('filters').querySelectorAll('input[name=type]').forEach((box) => { box.checked = on; });
+
   $('filters').replaceChildren(
     h('div', { class: 'row' },
       state.admin
@@ -77,8 +101,13 @@ function buildFilters() {
         ...[['', 'Any'], ['private', 'Private'], ['shared', 'Groups only'], ['org', 'Organization'], ['public', 'Public']]
           .map(([value, label]) => h('option', { value }, label)))),
       h('label', {}, 'Title or tag contains ', h('input', { type: 'text', name: 'text' }))),
-    h('fieldset', {}, h('legend', {}, 'Item types (item data is read)'), DATA_TYPES.map(check)),
-    h('fieldset', {}, h('legend', {}, 'Item types (only the item URL is checked)'), URL_TYPES.map(check)),
+    h('div', { class: 'row' }, h('strong', {}, 'Item types'),
+      h('button', { type: 'button', onclick: setAll(true) }, 'Select all'),
+      h('button', { type: 'button', onclick: setAll(false) }, 'Deselect all')),
+    ...groups,
+    skipped.length ? h('details', { class: 'group' },
+      h('summary', {}, h('span', { class: 'meta' }, `Not scanned: ${count(skipped.reduce((sum, group) => sum + group.types.length, 0), 'other type')} in this content`)),
+      skipped.map((group) => h('p', { class: 'meta' }, `${group.types.join(', ')} — ${group.reason}.`))) : '',
     h('div', { class: 'row' },
       h('button', { type: 'submit', id: 'scan' }, 'Scan'),
       h('button', { type: 'button', id: 'stop', disabled: true, onclick: () => { state.stop = true; } }, 'Stop')),
@@ -93,11 +122,11 @@ function buildQuery(form) {
   const quote = (value) => `"${value.replace(/"/g, '')}"`;
   const owner = state.admin ? form.get('owner').trim() : state.self.user.username;
   const parts = [owner ? `owner:${quote(owner)}` : `orgid:${state.self.id}`];
-  const types = form.getAll('type');
+  const types = form.getAll('type').filter(isScanned);
   parts.push(`(${types.map((type) => `type:${quote(type)}`).join(' OR ')})`);
   if (form.get('access')) parts.push(`access:${form.get('access')}`);
   if (form.get('text').trim()) parts.push(`(${form.get('text').trim()})`);
-  return { q: parts.join(' AND '), types: new Set(types) };
+  return { q: parts.join(' AND '), types: new Set(types.map((type) => type.toLowerCase())) };
 }
 
 async function scan() {
@@ -122,7 +151,7 @@ async function scan() {
     };
     for await (const item of searchItems(q, state.session.token)) {
       if (state.stop) break;
-      if (!types.has(item.type)) continue;   // search matches words, so "Web Map" also finds "Web Mapping Application"
+      if (!types.has(item.type.toLowerCase())) continue;   // search matches words, so "Web Map" also finds "Web Mapping Application"
       batch.push(item);
       if (batch.length >= 60) await flush();
     }
@@ -139,18 +168,23 @@ async function scan() {
 
 async function scanItem(item) {
   const documents = [{ name: 'item URL', doc: { url: item.url || '' } }];
+  const unread = (reason) => state.unread.push({ item, reason });
   try {
-    if (DATA_TYPES.includes(item.type)) {
-      const text = await itemData(item.id, state.session.token);
-      documents.push({ name: 'data', text, doc: parse(text) });
+    const body = await itemBytes(item.id, state.session.token);
+    if (body.tooLarge) {
+      unread(`item data is ${Math.round(body.tooLarge / 1048576)} MB, over the ${DATA_LIMIT / 1048576} MB read limit`);
+    } else {
+      const content = await readContent(body.bytes);
+      for (const entry of content.documents) documents.push({ name: entry.name, text: entry.text, doc: parse(entry.text) });
+      if (content.unread) unread(content.unread);
     }
     if (RESOURCE_TYPES.has(item.type)) {
       const resources = await jsonResources(item.id, state.session.token);
       for (const entry of resources.documents) documents.push({ name: entry.name, doc: parse(entry.text) });
-      if (resources.skipped) state.unread.push({ item, reason: `${count(resources.skipped, 'resource file')} beyond the first ${resources.limit} not read` });
+      if (resources.skipped) unread(`${count(resources.skipped, 'resource file')} beyond the first ${resources.limit} not read`);
     }
   } catch (error) {
-    state.unread.push({ item, reason: error.message });
+    unread(error.message);
   }
   const locations = documents.flatMap((document) =>
     findReferences(document.doc, state.lookup).map((location) => ({ ...location, document })));
@@ -202,6 +236,14 @@ function targetLabel(item) {
   return item.title + (superseded ? ` — also deprecated${item.retires ? `, retires ${item.retires}` : ''}` : '');
 }
 
+/** A retirement notice can point to "a similar item" where there is no one-to-one replacement. */
+function similarNote(id) {
+  const similar = state.lookup.items.get(id)?.similarId;
+  if (!similar) return '';
+  const item = state.lookup.items.get(similar);
+  return ` Its retirement notice points to a similar item instead of a one-to-one replacement: ${item ? item.title : 'not public'} (${similar}). Read the notice before switching.`;
+}
+
 function renderLocation(result, location) {
   const node = typeof location.document.doc === 'object' ? nodeAt(location.document.doc, location.path) : null;
   const body = h('div', { class: 'body' });
@@ -235,13 +277,14 @@ function renderSwap(result, location, node, target, direct) {
   const plan = planSwap(location, node, state.lookup, target);
   location.status = plan.fixable ? 'Swap possible, schema not checked' : plan.reason;
   if (!plan.fixable) {
-    action.append(plan.reason);
+    action.append(plan.reason, similarNote(location.candidates[0].id));
     return [action];
   }
   const superseded = plan.replacement.deprecated || plan.replacement.newVersionId;
   const parts = [
     h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title), direct ? sourceNote(location.candidates[0]) : ''),
     superseded ? h('div', { class: 'bad' }, `This replacement is itself deprecated${plan.replacement.retires ? ` and retires ${plan.replacement.retires}` : ''}.`) : null,
+    similarNote(plan.replacement.id) ? h('div', {}, similarNote(plan.replacement.id).trim()) : null,
     h('div', { class: 'change' }, plan.changes.map((change) => h('div', {}, `${change.key}: ${change.from} → ${change.to}`))),
     action,
   ].filter(Boolean);
@@ -281,10 +324,10 @@ function sourceNote(entry) {
 
 function replacementNote(location) {
   const entry = location.candidates[0];
-  if (!entry.replacementIds.length) return entry.replacementNote + '.';
+  if (!entry.replacementIds.length) return entry.replacementNote + '.' + similarNote(entry.id);
   const chain = replacementChain(entry, state.lookup);
   const latest = chain.length > 1 ? ` Latest version: ${chain.at(-1).title} (${chain.at(-1).id}).` : '';
-  return `Replacement: ${chain[0] ? targetLabel(chain[0]) : entry.replacementIds[0]} (${entry.replacementIds.join(', ')})${sourceNote(entry) || '.'}${latest}`;
+  return `Replacement: ${chain[0] ? targetLabel(chain[0]) : entry.replacementIds[0]} (${entry.replacementIds.join(', ')})${sourceNote(entry) || '.'}${latest}${similarNote(entry.replacementIds[0])}`;
 }
 
 // ---- Apply one swap -----------------------------------------------------------------------

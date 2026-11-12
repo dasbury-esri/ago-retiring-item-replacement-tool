@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   serviceParts, parseReplacement, newVersionLink, retirementDate, replacementChain, buildLookup, findReferences, planSwap, applySwap, compareSchemas, nodeAt,
 } from '../match.js';
+import { readContent } from '../content.js';
 
 const OLD = 'a'.repeat(32), NEW = 'b'.repeat(32), TWIN = 'c'.repeat(32), GONE = 'd'.repeat(32);
 const OLD_URL = 'https://services.arcgis.com/Org/arcgis/rest/services/States/FeatureServer';
@@ -137,6 +138,22 @@ test('a deprecated replacement leads on to its newer version, and either can be 
   assert.equal(planSwap(location, nodeAt(doc, location.path), chained).newUrl, NEW_URL + '/3');
   const latest = planSwap(location, nodeAt(doc, location.path), chained, chain[1]);
   assert.deepEqual([latest.newUrl, latest.changes[1].to], [LATEST_URL + '/3', TWIN]);
+});
+
+test('item data is read by what it is: text, zip, or unreadable', async () => {
+  const bytes = (text) => new TextEncoder().encode(text);
+  assert.deepEqual(await readContent(bytes('')), { documents: [], unread: null });
+  assert.equal((await readContent(bytes('\uFEFF{"a":1}'))).documents[0].text, '{"a":1}');
+  assert.match((await readContent(Uint8Array.of(0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c))).unread, /7z/);
+  assert.match((await readContent(Uint8Array.of(1, 2, 0, 3))).unread, /binary/);
+  // a one-file zip, stored uncompressed: local header, central directory, end record
+  const name = bytes('a/config.json'), body = bytes('{"url":"x"}');
+  const header = (signature, fields) => { const view = new DataView(new ArrayBuffer(fields)); view.setUint32(0, signature, true); return view; };
+  const local = header(0x04034b50, 30); local.setUint32(18, body.length, true); local.setUint32(22, body.length, true); local.setUint16(26, name.length, true);
+  const central = header(0x02014b50, 46); central.setUint32(20, body.length, true); central.setUint32(24, body.length, true); central.setUint16(28, name.length, true);
+  const end = header(0x06054b50, 22); end.setUint16(10, 1, true); end.setUint32(16, 30 + name.length + body.length, true);
+  const zip = new Uint8Array(await new Blob([local, name, body, central, name, end]).arrayBuffer());
+  assert.deepEqual((await readContent(zip)).documents, [{ name: 'data.zip/a/config.json', text: '{"url":"x"}' }]);
 });
 
 test('schema comparison', () => {
