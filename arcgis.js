@@ -1,5 +1,5 @@
 // ArcGIS REST calls. Uses global fetch, so it also runs under Node for checks.
-import { PORTAL, RETIREMENT_TABLE } from './config.js';
+import { LINK_FIXES, PORTAL, RETIREMENT_TABLE } from './config.js';
 import { buildLookup, compareSchemas, newVersionLink, parseReplacement, retirementDate, serviceParts } from './match.js';
 
 const SHARING = PORTAL + '/sharing/rest';
@@ -56,7 +56,7 @@ async function publicItems(ids) {
     const page = await request(`${SHARING}/search`, { q: `id:(${batch.join(' OR ')})`, num: 100 });
     for (const item of page.results) {
       items.set(item.id, { id: item.id, title: item.title, type: item.type, url: item.url,
-        newVersionId: newVersionLink(item.description, item.id),
+        newVersionId: LINK_FIXES[item.id] || newVersionLink(item.description, item.id),
         deprecated: item.contentStatus === 'deprecated', retires: retirementDate(item.description) });
     }
   });
