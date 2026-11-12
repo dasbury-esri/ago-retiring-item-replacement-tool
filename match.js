@@ -43,8 +43,9 @@ export function newVersionLink(description, ownId) {
 }
 
 /**
- * The replacement comes from the table; where the table has none, from the "new version" link
- * in the retiring item's description.
+ * The replacement is the "new version" link in the retiring item's description when there is
+ * one, otherwise the table's. The table wins only when the description's item cannot be read
+ * and the table's can.
  * @param rows   attributes from Esri's retirement table
  * @param items  Map of item id -> item metadata (retiring items and their replacements)
  */
@@ -59,15 +60,17 @@ export function buildLookup(rows, items) {
       replacement.note = "Esri's table lists this item as its own replacement, so there is nothing different to swap to";
     }
     const linked = meta.newVersionId || null;
-    const fromDescription = !replacement.ids.length && linked;
+    const tableIds = replacement.ids;
+    const fromDescription = Boolean(linked) && (items.has(linked) || !tableIds.some((id) => items.has(id)));
+    const other = fromDescription ? tableIds.filter((id) => id !== linked) : [linked].filter(Boolean);
     if (fromDescription) replacement.ids = [linked];
     const entry = {
       id: row.item_id, title: row.title, type: row.item_type, owner: row.owner,
       url: meta.url || null, replacementIds: replacement.ids, replacementNote: replacement.note,
       tableText: String(row.superceded_by || '').trim(),
-      replacementSource: fromDescription ? 'description' : 'table',
-      // set when the table and the description name different replacements; the table's is used
-      alternateId: !fromDescription && replacement.ids.length === 1 && linked && linked !== replacement.ids[0] ? linked : null,
+      // 'table' also covers the usual case where table and description agree
+      replacementSource: fromDescription && (other.length || !tableIds.length) ? 'description' : 'table',
+      alternateId: other[0] || null,   // what the source that was not used says, when it differs
     };
     byId.set(entry.id, entry);
     const parts = serviceParts(entry.url);

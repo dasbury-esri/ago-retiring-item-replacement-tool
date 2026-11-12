@@ -244,7 +244,7 @@ function sourceNote(entry) {
   if (entry.replacementSource === 'description') {
     return ` — taken from the "new version" link in the retiring item's description; Esri's table says "${entry.tableText}".`;
   }
-  return entry.alternateId ? ` — note: the retiring item's description links a different item (${entry.alternateId}).` : '';
+  return entry.alternateId ? ` — taken from Esri's table; the item linked in the description (${entry.alternateId}) could not be read.` : '';
 }
 
 function replacementNote(location) {

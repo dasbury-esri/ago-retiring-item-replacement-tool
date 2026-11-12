@@ -3,9 +3,10 @@
 A static browser app. No backend, no build step, no dependencies.
 
 1. **Lookup** — reads Esri's public "Items Retiring in December 2026" table and resolves each
-   retiring item (and its listed replacement) to a service URL. Where the table lists no
-   replacement, the "new version of this item" link in the retiring item's description is used
-   instead, and the result says so.
+   retiring item (and its listed replacement) to a service URL. The "new version of this item"
+   link in the retiring item's description is preferred over the table's replacement column when they differ or the table has none; the
+   table's is used only when the description's item cannot be read and the table's can. The
+   result says which source was used.
 2. **Scan** — after ArcGIS sign-in, searches the signed-in user's items (the whole organization
    for an administrator) and reads each one for retiring item IDs and service URLs.
    Filters: owner (administrators), sharing level, item type, title/tag text.

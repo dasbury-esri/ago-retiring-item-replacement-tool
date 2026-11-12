@@ -101,7 +101,7 @@ test('self-replacement is not a swap; same-service replacement changes only the 
   assert.match(already.reason, /already points at the replacement/);
 });
 
-test('description link fills a missing replacement; the table wins when both exist', () => {
+test('description link wins unless only the table\'s replacement can be read', () => {
   const notice = (id) => `<p><strong>Retirement Notice:</strong> A <a target='_blank' href='https://www.arcgis.com/home/item.html?id=${id}'><strong>new version of this item</strong></a> is available. See <a href='https://www.arcgis.com/home/item.html?id=${GONE}'>related data</a>.</p>`;
   assert.equal(newVersionLink(notice(NEW), OLD), NEW);
   assert.equal(newVersionLink(notice(OLD), OLD), null);
@@ -112,7 +112,12 @@ test('description link fills a missing replacement; the table wins when both exi
   );
   assert.deepEqual([filled.byId.get(OLD).replacementIds, filled.byId.get(OLD).replacementSource], [[NEW], 'description']);
   assert.deepEqual(filled.byId.get(TWIN).replacementIds, [NEW]);
-  assert.deepEqual([filled.byId.get(GONE).replacementIds, filled.byId.get(GONE).alternateId], [[OLD], NEW]);
+  assert.deepEqual([filled.byId.get(GONE).replacementIds, filled.byId.get(GONE).replacementSource, filled.byId.get(GONE).alternateId], [[OLD], 'table', NEW]);
+  const readable = (source) => new Map([[OLD, { newVersionId: NEW }], [NEW, {}], ...source]);
+  const disagree = buildLookup([{ item_id: OLD, superceded_by: GONE }], readable([[GONE, {}]])).byId.get(OLD);
+  assert.deepEqual([disagree.replacementIds, disagree.replacementSource, disagree.alternateId], [[NEW], 'description', GONE]);
+  const agree = buildLookup([{ item_id: OLD, superceded_by: NEW }], readable([])).byId.get(OLD);
+  assert.deepEqual([agree.replacementIds, agree.replacementSource, agree.alternateId], [[NEW], 'table', null]);
 });
 
 test('schema comparison', () => {
