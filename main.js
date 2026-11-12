@@ -200,7 +200,7 @@ function renderLocation(result, location) {
   const node = typeof location.document.doc === 'object' ? nodeAt(location.document.doc, location.path) : null;
   const action = h('div', { class: 'action' });
   const row = h('div', { class: 'location' },
-    h('div', {}, h('strong', {}, (node && node.title) || location.document.name), ' ',
+    h('div', {}, node && node.title ? h('strong', {}, node.title + ' ') : null,
       h('code', {}, `${location.document.name} ${pointer(location.path)}`)),
     h('div', {}, describe(location)),
     action);
@@ -216,7 +216,8 @@ function renderLocation(result, location) {
   row.insertBefore(h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title)), action);
   row.insertBefore(h('div', { class: 'change' }, plan.changes.map((change) => h('div', {}, `${change.key}: ${change.from} → ${change.to}`))), action);
   action.append('Comparing schemas…');
-  schemaCheck(plan.oldUrl, plan.newUrl, state.session.token).then((schema) => {
+  const check = plan.sameService ? Promise.resolve({ same: true }) : schemaCheck(plan.oldUrl, plan.newUrl, state.session.token);
+  check.then((schema) => {
     if (!schema.same) {
       location.status = 'Schema differs: ' + schema.problems.join('; ');
       action.replaceChildren(h('div', {}, h('span', { class: 'bad' }, 'Schema differs — not offered as a swap.'),
@@ -229,7 +230,7 @@ function renderLocation(result, location) {
     const title = h('input', { type: 'text', value: plan.replacement.title || '' });
     const button = h('button', {}, 'Apply swap');
     button.addEventListener('click', () => apply(result, location, plan, rename.checked ? title.value : null, action));
-    action.replaceChildren(h('span', { class: 'good' }, 'Same schema.'),
+    action.replaceChildren(h('span', { class: 'good' }, plan.sameService ? 'Same service; only the item ID changes.' : 'Same schema.'),
       h('label', {}, rename, ' Also rename layer to'), title, button);
   }).catch((error) => {
     location.status = 'Schema could not be compared: ' + error.message;

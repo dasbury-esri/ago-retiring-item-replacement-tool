@@ -89,6 +89,18 @@ test('swap refuses a different service type', () => {
   assert.match(planSwap(location, nodeAt(doc, location.path), other).reason, /Service type changes/);
 });
 
+test('self-replacement is not a swap; same-service replacement changes only the item ID', () => {
+  const quirks = buildLookup(
+    [{ item_id: OLD, superceded_by: OLD }, { item_id: TWIN, superceded_by: NEW }],
+    new Map([[OLD, { id: OLD, url: OLD_URL }], [TWIN, { id: TWIN, url: NEW_URL }], [NEW, { id: NEW, url: NEW_URL }]]),
+  );
+  const doc = { layers: [{ itemId: OLD, url: OLD_URL }, { itemId: TWIN, url: NEW_URL + '/1' }, { itemId: NEW, url: NEW_URL }] };
+  const [self, twin, already] = findReferences(doc, quirks).map((location) => planSwap(location, nodeAt(doc, location.path), quirks));
+  assert.match(self.reason, /its own replacement/);
+  assert.deepEqual(twin.changes, [{ key: 'itemId', from: TWIN, to: NEW }]);
+  assert.match(already.reason, /already points at the replacement/);
+});
+
 test('schema comparison', () => {
   const field = (name, type = 'esriFieldTypeString') => ({ name, type });
   const old = { geometryType: 'esriGeometryPolygon', fields: [field('NAME'), field('POP', 'esriFieldTypeInteger')] };

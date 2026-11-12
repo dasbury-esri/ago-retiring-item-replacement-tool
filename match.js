@@ -39,6 +39,10 @@ export function buildLookup(rows, items) {
   for (const row of rows) {
     const meta = items.get(row.item_id) || {};
     const replacement = parseReplacement(row.superceded_by);
+    if (replacement.ids.includes(row.item_id)) {   // seen in Esri's table: an item listed as its own replacement
+      replacement.ids = [];
+      replacement.note = "Esri's table lists this item as its own replacement, so there is nothing different to swap to";
+    }
     const entry = {
       id: row.item_id, title: row.title, type: row.item_type, owner: row.owner,
       url: meta.url || null, replacementIds: replacement.ids, replacementNote: replacement.note,
@@ -130,10 +134,15 @@ export function planSwap(location, node, lookup) {
   if (newParts.kind !== oldParts.kind) {
     return no(`Service type changes (${oldParts.kind} to ${newParts.kind}); the layer must be re-added by hand.`);
   }
-  const newUrl = newParts.root + (oldParts.layer === null ? '' : '/' + oldParts.layer);
-  const changes = [{ key: 'url', from: node.url, to: newUrl }];
-  if (typeof node.itemId === 'string') changes.push({ key: 'itemId', from: node.itemId, to: replacement.id });
-  return { fixable: true, replacement, oldUrl: bare, newUrl, changes };
+  // A replacement item can point at the very same service; then only the item ID changes.
+  const sameService = newParts.key === oldParts.key;
+  const newUrl = sameService ? bare : newParts.root + (oldParts.layer === null ? '' : '/' + oldParts.layer);
+  const changes = sameService ? [] : [{ key: 'url', from: node.url, to: newUrl }];
+  if (typeof node.itemId === 'string' && node.itemId !== replacement.id) {
+    changes.push({ key: 'itemId', from: node.itemId, to: replacement.id });
+  }
+  if (!changes.length) return no('This layer already points at the replacement; nothing to change.');
+  return { fixable: true, replacement, oldUrl: bare, newUrl, changes, sameService };
 }
 
 /** Return a copy of doc with the changes applied at path. Nothing else is touched. */
