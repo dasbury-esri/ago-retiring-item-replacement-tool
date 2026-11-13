@@ -300,12 +300,13 @@ function renderSwap(result, location, node, target, direct) {
       return;
     }
     location.status = 'Same schema; swap offered';
-    const rename = h('input', { type: 'checkbox' });
+    // Renaming is on by default, except when only the item changes and the layer is otherwise the same.
+    const rename = h('input', { type: 'checkbox', checked: !plan.sameService });
     const title = h('input', { type: 'text', value: plan.replacement.title || '' });
     const button = h('button', {}, 'Apply swap');
     button.addEventListener('click', () => apply(result, location, plan, rename.checked ? title.value : null, action));
     action.replaceChildren(h('span', { class: 'good' }, plan.sameService ? 'Same service; only the item ID changes.' : 'Same schema.'),
-      h('label', {}, rename, ' Also rename layer to'), title, button);
+      h('label', {}, rename, node.title ? ` Rename layer "${node.title}" to` : ' Name the layer'), title, button);
   }).catch((error) => {
     if (location.run !== run) return;
     location.status = 'Schema could not be compared: ' + error.message;
