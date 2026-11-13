@@ -1,5 +1,5 @@
 // ArcGIS REST calls. Uses global fetch, so it also runs under Node for checks.
-import { LINK_FIXES, PORTAL, RETIREMENT_TABLE } from './config.js';
+import { LINK_FIXES, PORTAL, RETIREMENT_TABLE, SUGGESTIONS } from './config.js';
 import { buildLookup, compareSchemas, newVersionLink, parseReplacement, retirementDate, serviceParts } from './match.js';
 
 const SHARING = PORTAL + '/sharing/rest';
@@ -69,7 +69,7 @@ export async function loadLookup() {
   const items = await publicItems(rows.map((row) => row.item_id));
   // Replacements, then the replacements' own newer versions, until nothing new turns up.
   const asked = new Set(items.keys());
-  let wanted = rows.flatMap((row) => parseReplacement(row.superceded_by).ids);
+  let wanted = [...rows.flatMap((row) => parseReplacement(row.superceded_by).ids), ...Object.values(SUGGESTIONS).map((entry) => entry.id)];
   for (let round = 0; round < 6; round += 1) {
     for (const item of items.values()) wanted.push(...[item.newVersionId, item.similarId].filter(Boolean));
     const missing = [...new Set(wanted)].filter((id) => !asked.has(id));
@@ -78,7 +78,7 @@ export async function loadLookup() {
     for (const [id, item] of await publicItems(missing)) items.set(id, item);
     wanted = [];
   }
-  const lookup = buildLookup(rows, items);
+  const lookup = buildLookup(rows, items, SUGGESTIONS);
   lookup.unresolved = rows.filter((row) => !lookup.items.has(row.item_id)).length;
   return lookup;
 }

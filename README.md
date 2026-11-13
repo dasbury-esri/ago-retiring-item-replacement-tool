@@ -18,6 +18,15 @@ A replacement can itself be deprecated and link to a newer version. The tool say
 a newer version exists it offers a choice between the next version and the latest; each choice
 gets its own schema check.
 
+For a few retiring items neither source gives a replacement but a current item on the same
+service exists (the 15 "Sentinel-2 Imagery" renderings, now covered by Sentinel-2 Views). Those
+suggestions live in `config.js` and are labelled in the results as the tool's own, not Esri's.
+
+When a replacement item points at the same service as the retiring one, the service is not going
+away: layers on it are flagged only if they name the retiring item by ID, and a swap changes the
+item ID alone. Because a layer takes settings it does not set itself from the item it was added
+from, such a swap also writes the old item's rendering rule into the layer so it draws as before.
+
 ## Where references are looked for
 
 The scanner does not need to know each item type's storage format in advance. For every item it
@@ -63,6 +72,7 @@ Assistant or the item's update operation.
 - A service URL shared by several retiring items is matched as "one of N" unless the layer also
   carries a retiring item ID.
 - Numbered hosts are matched exactly (`demographics5` is not treated as `demographics1`).
+- After any swap, settings the layer never set itself (pop-ups, styling) come from the new item.
 - Layers that change service type (for example MapServer to FeatureServer) are reported, not swapped.
 
 ## Run and test

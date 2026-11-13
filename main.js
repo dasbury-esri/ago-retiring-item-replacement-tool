@@ -271,6 +271,22 @@ function renderLocation(result, location) {
   return row;
 }
 
+const shown = (value) => (typeof value === 'string' ? value : value === undefined ? '(not set)' : JSON.stringify(value));
+const describeChange = (change) => `${change.key}: ${shown(change.from)} → ${shown(change.to)}`;
+
+/**
+ * A layer takes settings it does not set itself from the item it was added from. When a swap
+ * changes only that item, write the old item's rendering rule into the layer so it keeps
+ * drawing the same way.
+ */
+async function keepInherited(plan, location, node) {
+  if (!location.retiring || node.renderingRule !== undefined) return;
+  const data = parse(await itemData(location.retiring.id, state.session.token));
+  if (data && data.renderingRule !== undefined) {
+    plan.changes.push({ key: 'renderingRule', from: undefined, to: data.renderingRule });
+  }
+}
+
 function renderSwap(result, location, node, target, direct) {
   const run = (location.run = {});   // a later choice in the version picker supersedes this one
   const action = h('div', { class: 'action' });
@@ -281,15 +297,20 @@ function renderSwap(result, location, node, target, direct) {
     return [action];
   }
   const superseded = plan.replacement.deprecated || plan.replacement.newVersionId;
+  const changeBox = h('div', { class: 'change' });
+  const showChanges = () => changeBox.replaceChildren(...plan.changes.map((change) => h('div', {}, describeChange(change))));
   const parts = [
     h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title), direct ? sourceNote(location.candidates[0]) : ''),
     superseded ? h('div', { class: 'bad' }, `This replacement is itself deprecated${plan.replacement.retires ? ` and retires ${plan.replacement.retires}` : ''}.`) : null,
     similarNote(plan.replacement.id) ? h('div', {}, similarNote(plan.replacement.id).trim()) : null,
-    h('div', { class: 'change' }, plan.changes.map((change) => h('div', {}, `${change.key}: ${change.from} → ${change.to}`))),
+    changeBox,
     action,
   ].filter(Boolean);
-  action.append('Comparing schemas…');
-  const check = plan.sameService ? Promise.resolve({ same: true }) : schemaCheck(plan.oldUrl, plan.newUrl, state.session.token);
+  showChanges();
+  action.append(plan.sameService ? 'Reading the retiring item…' : 'Comparing schemas…');
+  const check = plan.sameService
+    ? keepInherited(plan, location, node).then(() => { showChanges(); return { same: true }; })
+    : schemaCheck(plan.oldUrl, plan.newUrl, state.session.token);
   check.then((schema) => {
     if (location.run !== run) return;
     if (!schema.same) {
@@ -305,7 +326,7 @@ function renderSwap(result, location, node, target, direct) {
     const title = h('input', { type: 'text', value: plan.replacement.title || '' });
     const button = h('button', {}, 'Apply swap');
     button.addEventListener('click', () => apply(result, location, plan, rename.checked ? title.value : null, action));
-    action.replaceChildren(h('span', { class: 'good' }, plan.sameService ? 'Same service; only the item ID changes.' : 'Same schema.'),
+    action.replaceChildren(h('span', { class: 'good' }, plan.sameService ? 'Same service; the layer keeps its URL.' : 'Same schema.'),
       h('label', {}, rename, node.title ? ` Rename layer "${node.title}" to` : ' Name the layer'), title, button);
   }).catch((error) => {
     if (location.run !== run) return;
@@ -317,6 +338,9 @@ function renderSwap(result, location, node, target, direct) {
 
 /** Say where the replacement came from when it is not simply the table's. */
 function sourceNote(entry) {
+  if (entry.replacementSource === 'suggestion') {
+    return ` — suggested by this tool, not by Esri (the table says "${entry.tableText}"). ${entry.suggestionNote}`;
+  }
   if (entry.replacementSource === 'description') {
     return ` — taken from the "new version" link in the retiring item's description; Esri's table says "${entry.tableText}".`;
   }
@@ -339,7 +363,7 @@ async function apply(result, location, plan, newTitle, action) {
   const node = nodeAt(document.doc, location.path);
   const changes = [...plan.changes];
   if (newTitle !== null && newTitle !== node.title) changes.push({ key: 'title', from: node.title, to: newTitle });
-  const summary = changes.map((change) => `${change.key}: ${change.from} → ${change.to}`).join('\n');
+  const summary = changes.map(describeChange).join('\n');
   if (!confirm(`Save this change to "${item.title}"?\n\n${summary}\n\nA copy of the current item data is downloaded first.`)) return;
   action.replaceChildren('Saving…');
   try {
@@ -352,7 +376,7 @@ async function apply(result, location, plan, newTitle, action) {
     await updateItemData(item, JSON.stringify(next), token);
     const savedText = await itemData(item.id, token);
     const saved = nodeAt(JSON.parse(savedText), location.path) || {};
-    const wrong = changes.filter((change) => saved[change.key] !== change.to);
+    const wrong = changes.filter((change) => JSON.stringify(saved[change.key]) !== JSON.stringify(change.to));
     if (wrong.length) throw new Error(`Saved, but reading the item back did not show: ${wrong.map((change) => change.key).join(', ')}. Check the item.`);
     Object.assign(document, { text: savedText, doc: JSON.parse(savedText) });
     location.status = 'Fixed and read back';

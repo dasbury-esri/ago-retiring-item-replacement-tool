@@ -70,10 +70,11 @@ export function replacementChain(entry, lookup) {
  * The replacement is the "new version" link in the retiring item's description when there is
  * one, otherwise the table's. The table wins only when the description's item cannot be read
  * and the table's can.
+ * Where neither gives one, a suggestion from this tool's own list is used and labelled.
  * @param rows   attributes from Esri's retirement table
  * @param items  Map of item id -> item metadata (retiring items and their replacements)
  */
-export function buildLookup(rows, items) {
+export function buildLookup(rows, items, suggestions = {}) {
   const byId = new Map();
   const byUrl = new Map();
   for (const row of rows) {
@@ -88,20 +89,33 @@ export function buildLookup(rows, items) {
     const fromDescription = Boolean(linked) && (items.has(linked) || !tableIds.some((id) => items.has(id)));
     const other = fromDescription ? tableIds.filter((id) => id !== linked) : [linked].filter(Boolean);
     if (fromDescription) replacement.ids = [linked];
+    const suggestion = replacement.ids.length ? null : suggestions[row.item_id];
+    if (suggestion) replacement.ids = [suggestion.id];
     const entry = {
       id: row.item_id, title: row.title, type: row.item_type, owner: row.owner,
       url: meta.url || null, replacementIds: replacement.ids, replacementNote: replacement.note,
       tableText: String(row.superceded_by || '').trim(),
       // 'table' also covers the usual case where table and description agree
-      replacementSource: fromDescription && (other.length || !tableIds.length) ? 'description' : 'table',
+      replacementSource: suggestion ? 'suggestion' : fromDescription && (other.length || !tableIds.length) ? 'description' : 'table',
+      suggestionNote: suggestion ? suggestion.note : '',
       alternateId: other[0] || null,   // what the source that was not used says, when it differs
     };
     byId.set(entry.id, entry);
-    const parts = serviceParts(entry.url);
-    if (parts) {
-      if (!byUrl.has(parts.key)) byUrl.set(parts.key, []);
-      byUrl.get(parts.key).push(entry);
+  }
+  // A service that a replacement item also points at is not going away; only the retiring item
+  // is. Layers on such a service are affected only if they name the retiring item by ID.
+  const surviving = new Set();
+  for (const entry of byId.values()) {
+    for (const id of entry.replacementIds) {
+      const parts = byId.has(id) ? null : serviceParts(items.get(id)?.url);
+      if (parts) surviving.add(parts.key);
     }
+  }
+  for (const entry of byId.values()) {
+    const parts = serviceParts(entry.url);
+    if (!parts || surviving.has(parts.key)) continue;
+    if (!byUrl.has(parts.key)) byUrl.set(parts.key, []);
+    byUrl.get(parts.key).push(entry);
   }
   return { byId, byUrl, items };
 }
@@ -177,7 +191,7 @@ export function planSwap(location, node, lookup, target) {
   const bare = node.url.split(/[?#]/)[0].replace(/\/+$/, '');
   if (!oldParts || oldParts.matched !== bare) return no('The URL here is not a plain service URL.');
   if (!location.candidates.some((entry) => (serviceParts(entry.url) || {}).key === oldParts.key)) {
-    return no('The URL here is not the retiring service.');
+    return no('The URL here is not the retiring item\'s service.');
   }
   const newParts = serviceParts(replacement.url);
   if (!newParts) return no('The replacement item has no service URL.');

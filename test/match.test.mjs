@@ -96,10 +96,19 @@ test('self-replacement is not a swap; same-service replacement changes only the 
     new Map([[OLD, { id: OLD, url: OLD_URL }], [TWIN, { id: TWIN, url: NEW_URL }], [NEW, { id: NEW, url: NEW_URL }]]),
   );
   const doc = { layers: [{ itemId: OLD, url: OLD_URL }, { itemId: TWIN, url: NEW_URL + '/1' }, { itemId: NEW, url: NEW_URL }] };
-  const [self, twin, already] = findReferences(doc, quirks).map((location) => planSwap(location, nodeAt(doc, location.path), quirks));
+  // the third layer is already on the replacement item; its service survives, so it is not a reference
+  const found = findReferences(doc, quirks);
+  assert.equal(found.length, 2);
+  const [self, twin] = found.map((location) => planSwap(location, nodeAt(doc, location.path), quirks));
   assert.match(self.reason, /its own replacement/);
   assert.deepEqual(twin.changes, [{ key: 'itemId', from: TWIN, to: NEW }]);
-  assert.match(already.reason, /already points at the replacement/);
+  // a suggestion fills in only where table and description give nothing
+  const suggested = buildLookup([{ item_id: OLD, superceded_by: 'No replacement item' }, { item_id: TWIN, superceded_by: GONE }],
+    new Map([[OLD, { url: OLD_URL }], [NEW, { id: NEW, url: OLD_URL }], [GONE, {}]]),
+    { [OLD]: { id: NEW, note: 'why' }, [TWIN]: { id: NEW, note: 'unused' } });
+  assert.deepEqual([suggested.byId.get(OLD).replacementIds, suggested.byId.get(OLD).replacementSource], [[NEW], 'suggestion']);
+  assert.deepEqual([suggested.byId.get(TWIN).replacementIds, suggested.byId.get(TWIN).replacementSource], [[GONE], 'table']);
+  assert.equal(suggested.byUrl.size, 0);
 });
 
 test('description link wins unless only the table\'s replacement can be read', () => {
