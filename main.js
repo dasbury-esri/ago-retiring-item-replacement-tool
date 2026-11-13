@@ -1,9 +1,10 @@
 import { CLIENT_ID } from './config.js';
 import { currentSession, signIn, signOut } from './auth.js';
 import {
-  DATA_LIMIT, itemBytes, itemData, jsonResources, loadLookup, orgUsers, pool, portalSelf, schemaCheck, searchItems,
-  typeCounts, updateItemData,
+  DATA_LIMIT, itemBytes, itemData, itemMeta, jsonResources, loadLookup, orgUsers, pool, portalSelf, schemaCheck, searchItems,
+  topValues, typeCounts, updateItemData,
 } from './arcgis.js';
+import { describeUses, fieldUses, renameFields } from './fields.js';
 import { readContent } from './content.js';
 import { FIXABLE_TYPES, applySwap, findReferences, nodeAt, planSwap, pointer, replacementChain } from './match.js';
 import { GROUPS, NOT_SCANNED, RESOURCE_TYPES, isKnownType, isScanned } from './types.js';
@@ -208,17 +209,42 @@ function renderSummary() {
     state.results.length ? h('button', { onclick: exportCsv }, 'Export CSV') : null), unread || '');
 }
 
+const dataDocument = (result) => result.locations.find((location) => location.document.name === 'data')?.document;
+const readySwaps = (result) => result.locations.filter((location) => location.ready);
+
 function renderItem(result) {
-  const { item, locations } = result;
+  const { item } = result;
+  const list = h('div');
+  const note = h('span');
+  const fixable = FIXABLE_TYPES.has(item.type);
+  const all = h('button', { hidden: true, onclick: () => save(result, readySwaps(result).map((location) => ({ location, ...location.ready() }))) });
+  const undo = h('button', { hidden: true, onclick: () => restore(result, result.backup.text, 'the backup taken before the first swap', note) }, 'Undo: restore the backup');
+  const file = h('input', { type: 'file', accept: '.json,application/json', hidden: true });
+  file.addEventListener('change', async () => {
+    const [chosen] = file.files;
+    file.value = '';
+    if (chosen) restore(result, await chosen.text(), `the file "${chosen.name}"`, note, chosen.name);
+  });
   const details = h('details', { class: 'item' },
     h('summary', {},
       h('span', { class: 'title' }, item.title),
-      h('span', { class: 'meta' }, `${item.type} · ${item.owner} · ${item.access} · ${count(locations.length, 'reference')}`)),
-    h('div', { class: 'location' }, itemLink(item.id, 'Open item page')));
+      h('span', { class: 'meta' }, `${item.type} · ${item.owner} · ${item.access} · ${count(result.locations.length, 'reference')}`)),
+    h('div', { class: 'location' },
+      h('div', { class: 'action' }, itemLink(item.id, 'Open item page'), all, undo,
+        fixable ? h('button', { onclick: () => file.click() }, 'Restore from a backup file…') : null, file),
+      note),
+    list);
+  result.fill = () => list.replaceChildren(...result.locations.map((location) => renderLocation(result, location)));
+  result.refresh = () => {
+    const ready = readySwaps(result).length;
+    all.hidden = ready < 2;
+    all.textContent = `Apply all ${ready} swaps that are ready`;
+    undo.hidden = !result.backup || !dataDocument(result) || result.backup.text === dataDocument(result).text;
+  };
   details.addEventListener('toggle', () => {
     if (!details.open || details.dataset.filled) return;
     details.dataset.filled = '1';
-    for (const location of locations) details.append(renderLocation(result, location));
+    result.fill();
   });
   return details;
 }
@@ -260,7 +286,7 @@ function renderLocation(result, location) {
   }
   // The direct replacement may itself be deprecated; let the user step to it or jump to the latest.
   const chain = replacementChain(location.candidates[0], state.lookup);
-  const show = (target) => body.replaceChildren(...renderSwap(result, location, node, target, target === chain[0]));
+  const show = (target, chosen = false) => body.replaceChildren(...renderSwap(result, location, node, target, target === chain[0], chosen));
   if (chain.length > 1) {
     const step = (index) => (index === chain.length - 1 ? 'Latest version' : index === 0 ? 'Next version' : 'Later version');
     const select = h('select', {}, chain.map((item, index) => h('option', {}, `${step(index)}: ${targetLabel(item)}`)));
@@ -268,11 +294,30 @@ function renderLocation(result, location) {
     row.insertBefore(h('label', {}, 'Replace with ', select), body);
   }
   show(chain[0]);
+  row.append(ownChoice(show));
   return row;
 }
 
+/** Let the user name a replacement item themselves; it gets the same checks as a listed one. */
+function ownChoice(show) {
+  const input = h('input', { type: 'text', placeholder: 'item ID or item page address' });
+  const message = h('span', { class: 'bad' });
+  const check = async () => {
+    const id = (input.value.toLowerCase().match(/[0-9a-f]{32}/) || [])[0];
+    if (!id) return message.replaceChildren('That does not contain an item ID.');
+    message.replaceChildren('');
+    try {
+      show(state.lookup.items.get(id) || await itemMeta(id, state.session.token), true);
+    } catch (error) {
+      message.replaceChildren(`That item could not be read (${error.message}).`);
+    }
+  };
+  return h('details', {}, h('summary', { class: 'meta' }, 'Use a different replacement item'),
+    h('div', { class: 'action' }, input, h('button', { onclick: check }, 'Check it'), message));
+}
+
 const shown = (value) => (typeof value === 'string' ? value : value === undefined ? '(not set)' : JSON.stringify(value));
-const describeChange = (change) => `${change.key}: ${shown(change.from)} → ${shown(change.to)}`;
+const describeChange = (change) => `${change.key}: ${change.note || `${shown(change.from)} → ${shown(change.to)}`}`;
 
 /**
  * A layer takes settings it does not set itself from the item it was added from. When a swap
@@ -287,53 +332,127 @@ async function keepInherited(plan, location, node) {
   }
 }
 
-function renderSwap(result, location, node, target, direct) {
+function renderSwap(result, location, node, target, direct, chosen) {
   const run = (location.run = {});   // a later choice in the version picker supersedes this one
+  location.ready = null;
+  result.refresh();
   const action = h('div', { class: 'action' });
-  const plan = planSwap(location, node, state.lookup, target);
+  const plan = planSwap(location, node, state.lookup, target, chosen);
   location.status = plan.fixable ? 'Swap possible, schema not checked' : plan.reason;
   if (!plan.fixable) {
-    action.append(plan.reason, similarNote(location.candidates[0].id));
+    action.append(plan.reason, chosen ? '' : similarNote(location.candidates[0].id));
     return [action];
   }
   const superseded = plan.replacement.deprecated || plan.replacement.newVersionId;
   const changeBox = h('div', { class: 'change' });
   const showChanges = () => changeBox.replaceChildren(...plan.changes.map((change) => h('div', {}, describeChange(change))));
+  const checks = h('div', { class: 'checks' });
   const parts = [
-    h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title), direct ? sourceNote(location.candidates[0]) : ''),
+    h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title),
+      chosen ? ' — chosen by you, not listed by Esri.' : direct ? sourceNote(location.candidates[0]) : ''),
     superseded ? h('div', { class: 'bad' }, `This replacement is itself deprecated${plan.replacement.retires ? ` and retires ${plan.replacement.retires}` : ''}.`) : null,
     similarNote(plan.replacement.id) ? h('div', {}, similarNote(plan.replacement.id).trim()) : null,
     changeBox,
+    checks,
     action,
   ].filter(Boolean);
   showChanges();
   action.append(plan.sameService ? 'Reading the retiring item…' : 'Comparing schemas…');
   const check = plan.sameService
-    ? keepInherited(plan, location, node).then(() => { showChanges(); return { same: true }; })
+    ? keepInherited(plan, location, node).then(() => { showChanges(); return { same: true, blocking: [], fields: [] }; })
     : schemaCheck(plan.oldUrl, plan.newUrl, state.session.token);
   check.then((schema) => {
     if (location.run !== run) return;
-    if (!schema.same) {
-      location.status = 'Schema differs: ' + schema.problems.join('; ');
-      action.replaceChildren(h('div', {}, h('span', { class: 'bad' }, 'Schema differs — not offered as a swap.'),
-        h('ul', { class: 'problems' }, schema.problems.slice(0, 8).map((problem) => h('li', {}, problem)),
-          schema.problems.length > 8 ? h('li', {}, `…and ${schema.problems.length - 8} more`) : null)));
+    if (schema.blocking.length) {
+      location.status = 'Not compatible: ' + schema.blocking.join('; ');
+      action.replaceChildren(h('div', {}, h('span', { class: 'bad' }, 'Not compatible — not offered as a swap.'),
+        h('ul', { class: 'problems' }, schema.blocking.slice(0, 8).map((problem) => h('li', {}, problem)),
+          schema.blocking.length > 8 ? h('li', {}, `…and ${schema.blocking.length - 8} more`) : null)));
       return;
     }
-    location.status = 'Same schema; swap offered';
+    // A missing or retyped field matters only where this layer's own settings use it.
+    const used = schema.fields.map((field) => ({ field, uses: fieldUses(node, field.name) }));
+    const unused = used.filter((entry) => !entry.uses.length).map((entry) => entry.field.name);
+    const retyped = used.filter((entry) => entry.uses.length && entry.field.issue === 'type');
+    const missing = used.filter((entry) => entry.uses.length && entry.field.issue === 'missing');
+    const selects = missing.map(({ field }) => fieldPicker(field));
+    checks.replaceChildren(
+      unused.length ? h('div', {}, `Not in the replacement, or a different type there, but not used by this layer's own settings: ${unused.join(', ')}. ` +
+        'Anything outside this item that uses them (apps, Arcade in other items) is not checked.') : '',
+      ...retyped.map(({ field, uses }) => h('div', { class: 'bad' },
+        `Field ${field.name} is used by this layer's ${describeUses(uses)} and changes type (${field.old.type} to ${field.now.type}). Check the layer after swapping.`)),
+      ...missing.map(({ field, uses }, index) => h('div', { class: 'action' },
+        h('span', { class: 'bad' }, `Field ${field.name} (“${field.old.alias}”, ${field.old.type}) is used by this layer's ${describeUses(uses)} and is not in the replacement.`),
+        h('label', {}, 'Use instead ', selects[index].select), selects[index].compare, selects[index].values)));
+
     // Renaming is on by default, except when only the item changes and the layer is otherwise the same.
     const rename = h('input', { type: 'checkbox', checked: !plan.sameService });
     const title = h('input', { type: 'text', value: plan.replacement.title || '' });
     const button = h('button', {}, 'Apply swap');
-    button.addEventListener('click', () => apply(result, location, plan, rename.checked ? title.value : null, action));
-    action.replaceChildren(h('span', { class: 'good' }, plan.sameService ? 'Same service; the layer keeps its URL.' : 'Same schema.'),
+    const changes = () => {
+      const list = [...plan.changes];
+      const mapping = Object.fromEntries(missing.map(({ field }, index) => [field.name, selects[index].select.value]).filter(([, to]) => to !== KEEP));
+      const renamed = renameFields(node, mapping);
+      for (const key of Object.keys(node)) {
+        if (['url', 'itemId', 'title'].includes(key) || JSON.stringify(node[key]) === JSON.stringify(renamed[key])) continue;
+        const fields = Object.entries(mapping).filter(([from]) => fieldUses({ [key]: node[key] }, from).length);
+        list.push({ key, from: node[key], to: renamed[key], note: fields.map(([from, to]) => `field ${from} → ${to}`).join(', ') });
+      }
+      if (rename.checked && title.value !== node.title) list.push({ key: 'title', from: node.title, to: title.value });
+      return list;
+    };
+    const update = () => {
+      const decided = selects.every(({ select }) => select.value);
+      button.disabled = !decided;
+      location.ready = decided && !location.done ? () => ({ changes: changes(), action }) : null;
+      result.refresh();
+    };
+    selects.forEach(({ select }) => select.addEventListener('change', update));
+    button.addEventListener('click', () => save(result, [{ location, changes: changes(), action }]));
+    const clean = !schema.fields.length;
+    location.status = clean ? 'Same schema; swap offered' : 'Schema differs; swap offered with caveats: ' + schema.problems.join('; ');
+    action.replaceChildren(
+      h('span', { class: 'good' }, plan.sameService ? 'Same service; the layer keeps its URL.' : clean ? 'Same schema.' : 'Schema differs; see above.'),
       h('label', {}, rename, node.title ? ` Rename layer "${node.title}" to` : ' Name the layer'), title, button);
+    update();
   }).catch((error) => {
     if (location.run !== run) return;
     location.status = 'Schema could not be compared: ' + error.message;
     action.replaceChildren(h('span', { class: 'bad' }, `Schema could not be compared (${error.message}) — not offered as a swap.`));
   });
   return parts;
+}
+
+const KEEP = '(keep)';
+
+/**
+ * A choice of replacement field for one the layer uses and the new service lacks. A field with
+ * the same alias and type is preselected; anything else is left for the user to decide.
+ */
+function fieldPicker(field) {
+  const same = (option) => option.alias.toLowerCase() === field.old.alias.toLowerCase();
+  const sure = field.options.filter((option) => same(option) && option.type === field.old.type);
+  const select = h('select', {},
+    h('option', { value: '' }, 'Choose…'),
+    field.options.map((option) => h('option', { value: option.name, selected: sure.length === 1 && option === sure[0] },
+      `${option.name} — “${option.alias}”, ${option.type}${same(option) ? ' (same alias)' : ''}`)),
+    h('option', { value: KEEP }, 'Nothing: leave the layer naming the old field (that setting will stop working)'));
+  const values = h('span', { class: 'meta' });
+  const list = (rows) => rows.map((row) => `${row.value === null || String(row.value).trim() === '' ? '(blank)' : row.value} ×${Number(row.count).toLocaleString()}`).join(', ') || '(no rows)';
+  const compare = h('button', {}, 'Compare values');
+  compare.addEventListener('click', async () => {
+    const to = select.value && select.value !== KEEP ? select.value : null;
+    values.replaceChildren('Reading…');
+    try {
+      const token = state.session.token;
+      const [before, after] = await Promise.all([
+        topValues(field.oldLayer, field.name, field.oldOid, token), to ? topValues(field.newLayer, to, field.newOid, token) : null]);
+      values.replaceChildren(`Most common values — ${field.name}: ${list(before)}` + (after ? `. ${to}: ${list(after)}` : '. Choose a field to compare it with.'));
+    } catch (error) {
+      values.replaceChildren(`Values could not be read (${error.message}).`);
+    }
+  });
+  return { select, compare, values };
 }
 
 /** Say where the replacement came from when it is not simply the table's. */
@@ -355,35 +474,81 @@ function replacementNote(location) {
   return `Replacement: ${chain[0] ? targetLabel(chain[0]) : entry.replacementIds[0]} (${entry.replacementIds.join(', ')})${sourceNote(entry) || '.'}${latest}${similarNote(entry.replacementIds[0])}`;
 }
 
-// ---- Apply one swap -----------------------------------------------------------------------
+// ---- Save swaps, undo ---------------------------------------------------------------------
 
-async function apply(result, location, plan, newTitle, action) {
+const backupName = (item, label = 'before') => `${item.id}-${label}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+
+/** Apply one or more planned swaps to an item in a single save. entries: [{ location, changes, action }]. */
+async function save(result, entries) {
   const { item } = result;
-  const document = location.document;
-  const node = nodeAt(document.doc, location.path);
-  const changes = [...plan.changes];
-  if (newTitle !== null && newTitle !== node.title) changes.push({ key: 'title', from: node.title, to: newTitle });
-  const summary = changes.map(describeChange).join('\n');
-  if (!confirm(`Save this change to "${item.title}"?\n\n${summary}\n\nA copy of the current item data is downloaded first.`)) return;
-  action.replaceChildren('Saving…');
+  const document = entries[0].location.document;
+  const layerName = (location) => nodeAt(document.doc, location.path)?.title || pointer(location.path);
+  const summary = entries.map((entry) => (entries.length > 1 ? `${layerName(entry.location)}\n` : '') + entry.changes.map(describeChange).join('\n')).join('\n\n');
+  const backup = result.backup ? `The backup downloaded earlier (${result.backup.name}) still holds the item as it was before the first swap.`
+    : 'A copy of the current item data is downloaded first.';
+  if (!confirm(`Save ${count(entries.length, 'swap')} to "${item.title}"?\n\n${summary}\n\n${backup}`)) return;
+  const each = (fn) => entries.forEach(fn);
+  each((entry) => entry.action.replaceChildren('Saving…'));
   try {
     const token = state.session.token;
     const current = await itemData(item.id, token);
     if (current !== document.text) throw new Error('The item changed since the scan. Scan again before fixing it.');
     if (/[:\[,]\s*-?\d{16,}/.test(current)) throw new Error('The item data holds numbers too large to rewrite safely in a browser. Fix it by hand.');
-    download(`${item.id}-before-${new Date().toISOString().replace(/[:.]/g, '-')}.json`, current);
-    const next = applySwap(document.doc, location.path, changes);
+    if (!result.backup) {
+      result.backup = { text: current, name: backupName(item) };
+      download(result.backup.name, current);
+    }
+    const next = entries.reduce((doc, entry) => applySwap(doc, entry.location.path, entry.changes), document.doc);
     await updateItemData(item, JSON.stringify(next), token);
     const savedText = await itemData(item.id, token);
-    const saved = nodeAt(JSON.parse(savedText), location.path) || {};
-    const wrong = changes.filter((change) => JSON.stringify(saved[change.key]) !== JSON.stringify(change.to));
-    if (wrong.length) throw new Error(`Saved, but reading the item back did not show: ${wrong.map((change) => change.key).join(', ')}. Check the item.`);
-    Object.assign(document, { text: savedText, doc: JSON.parse(savedText) });
-    location.status = 'Fixed and read back';
-    action.replaceChildren(h('span', { class: 'good' }, 'Saved and read back. Open the item to confirm it draws correctly.'));
+    const savedDoc = JSON.parse(savedText);
+    const wrong = entries.flatMap((entry) => {
+      const saved = nodeAt(savedDoc, entry.location.path) || {};
+      return entry.changes.filter((change) => JSON.stringify(saved[change.key]) !== JSON.stringify(change.to)).map((change) => change.key);
+    });
+    if (wrong.length) throw new Error(`Saved, but reading the item back did not show: ${wrong.join(', ')}. Check the item.`);
+    Object.assign(document, { text: savedText, doc: savedDoc });
+    each((entry) => {
+      Object.assign(entry.location, { status: 'Fixed and read back', ready: null, done: true });
+      entry.action.replaceChildren(h('span', { class: 'good' }, 'Saved and read back. Open the item to confirm it draws correctly.'));
+    });
   } catch (error) {
-    location.status = 'Apply failed: ' + error.message;
-    action.replaceChildren(h('span', { class: 'bad' }, error.message));
+    each((entry) => {
+      Object.assign(entry.location, { status: 'Apply failed: ' + error.message, ready: null });
+      entry.action.replaceChildren(h('span', { class: 'bad' }, error.message));
+    });
+  }
+  result.refresh();
+}
+
+/** Put back an earlier copy of the item data: the backup held in memory, or a downloaded backup file. */
+async function restore(result, text, label, note, fileName) {
+  const { item } = result;
+  const say = (message, good) => note.replaceChildren(h('span', { class: good ? 'good' : 'bad' }, message));
+  try {
+    const wanted = JSON.parse(text);
+    if (!wanted || typeof wanted !== 'object' || Array.isArray(wanted)) throw new Error('not item data');
+    const odd = fileName && !fileName.startsWith(item.id) ? `\n\nThe file name does not start with this item's ID (${item.id}). Make sure it is a backup of this item.` : '';
+    if (!confirm(`Replace the data of "${item.title}" with ${label}?\n\nEvery change made to the item since then is lost, including changes made outside this tool.${odd}`)) return;
+    const token = state.session.token;
+    const document = dataDocument(result);
+    const current = await itemData(item.id, token);
+    // Keep a copy of anything this tool does not already hold before overwriting it.
+    if (current !== result.backup?.text && (fileName || current !== document?.text)) download(backupName(item, 'before-restore'), current);
+    await updateItemData(item, text, token);
+    const savedText = await itemData(item.id, token);
+    if (JSON.stringify(JSON.parse(savedText)) !== JSON.stringify(wanted)) throw new Error('Saved, but reading the item back did not match the backup. Check the item.');
+    // Start over on this item: its references are whatever the restored data holds.
+    const restored = { name: 'data', text: savedText, doc: JSON.parse(savedText) };
+    result.locations = [
+      ...result.locations.filter((location) => location.document.name !== 'data'),
+      ...findReferences(restored.doc, state.lookup).map((location) => ({ ...location, document: restored })),
+    ];
+    result.fill();
+    result.refresh();
+    say('Restored and read back. Open the item to confirm it draws correctly.', true);
+  } catch (error) {
+    say(`Not restored: ${error.message}`);
   }
 }
 

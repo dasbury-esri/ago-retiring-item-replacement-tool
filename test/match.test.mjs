@@ -5,6 +5,7 @@ import {
   serviceParts, parseReplacement, newVersionLink, retirementDate, replacementChain, buildLookup, findReferences, planSwap, applySwap, compareSchemas, nodeAt,
 } from '../match.js';
 import { readContent } from '../content.js';
+import { describeUses, fieldUses, renameFields } from '../fields.js';
 
 const OLD = 'a'.repeat(32), NEW = 'b'.repeat(32), TWIN = 'c'.repeat(32), GONE = 'd'.repeat(32);
 const OLD_URL = 'https://services.arcgis.com/Org/arcgis/rest/services/States/FeatureServer';
@@ -174,4 +175,51 @@ test('schema comparison', () => {
   assert.equal(compareSchemas(old, { ...same, geometryType: 'esriGeometryPoint' }).same, false);
   assert.equal(compareSchemas({ layers: [{ id: 0, name: 'A', ...old }] }, { layers: [{ id: 1, name: 'A', ...same }] }).same, false);
   assert.equal(compareSchemas({}, {}).same, false);
+});
+
+test('schema differences are split into blocking ones and field ones', () => {
+  const f = (name, type = 'esriFieldTypeString', alias = name) => ({ name, type, alias });
+  const old = { geometryType: 'esriGeometryPolygon', fields: [f('FID', 'esriFieldTypeOID'), f('NAME'), f('FCC', undefined, 'Feature Code')] };
+  const next = { geometryType: 'esriGeometryPolygon', fields: [f('OBJECTID', 'esriFieldTypeOID'), f('NAME', 'esriFieldTypeDouble'), f('MNFC', 'esriFieldTypeSmallInteger', 'Feature Code')] };
+  const result = compareSchemas(old, next);
+  assert.equal(result.same, false);
+  assert.deepEqual(result.blocking, []);
+  assert.deepEqual(result.fields.map((field) => [field.name, field.issue]), [['NAME', 'type'], ['FCC', 'missing']]);
+  assert.deepEqual(result.fields[1].options.map((option) => option.name), ['NAME', 'MNFC']);
+  assert.equal(result.fields[1].oldOid, 'FID');
+  const image = { pixelType: 'F32', bandCount: 2, capabilities: 'Image' };
+  assert.equal(compareSchemas(image, { ...image, capabilities: 'Image,TilesOnly' }).blocking.length, 1);
+});
+
+test('a replacement the user names skips the table but not the other checks', () => {
+  const doc = { layers: [{ itemId: TWIN, url: SHARED + '/2' }] };
+  const [location] = findReferences(doc, lookup);
+  const node = nodeAt(doc, location.path);
+  assert.equal(planSwap(location, node, lookup).fixable, false);
+  const own = { id: 'e'.repeat(32), url: 'https://demographics9.arcgis.com/arcgis/rest/services/Other/MapServer' };
+  assert.equal(planSwap(location, node, lookup, own, true).newUrl, own.url + '/2');
+  assert.match(planSwap(location, node, lookup, { id: OLD, url: OLD_URL }, true).reason, /retirement list/);
+  assert.match(planSwap(location, node, lookup, { id: own.id, url: NEW_URL }, true).reason, /Service type changes/);
+});
+
+test('field uses are found and renamed only where they are field names', () => {
+  const node = {
+    title: 'FCC layer', url: 'https://x/FCC/FeatureServer/0',
+    layerDefinition: { definitionExpression: "FCC = 'FCC' AND NFCC > 1", drawingInfo: { renderer: { field1: 'fcc', label: 'FCC' },
+      labelingInfo: [{ labelExpression: '[FCC]', labelExpressionInfo: { expression: '$feature.FCC + $feature["FCC"] + $feature.FCC2' } }] } },
+    popupInfo: { title: '{FCC} of {NAME}', fieldInfos: [{ fieldName: 'FCC', visible: false }, { fieldName: 'FCC', visible: true }] },
+    orderBy: { orderByFields: ['FCC DESC'] },
+  };
+  assert.equal(fieldUses(node, 'FCC').length, 7);
+  assert.deepEqual(fieldUses(node, 'SQMI'), []);
+  assert.equal(describeUses(fieldUses(node, 'FCC')), 'filter, drawing, labels, pop-up, orderBy/orderByFields/0');
+  const renamed = renameFields(node, { FCC: 'MNFC' });
+  assert.deepEqual(renamed, {
+    title: 'FCC layer', url: 'https://x/FCC/FeatureServer/0',
+    layerDefinition: { definitionExpression: "MNFC = 'FCC' AND NFCC > 1", drawingInfo: { renderer: { field1: 'MNFC', label: 'FCC' },
+      labelingInfo: [{ labelExpression: '[MNFC]', labelExpressionInfo: { expression: '$feature.MNFC + $feature["MNFC"] + $feature.FCC2' } }] } },
+    popupInfo: { title: '{MNFC} of {NAME}', fieldInfos: [{ fieldName: 'FCC', visible: false }, { fieldName: 'MNFC', visible: true }] },
+    orderBy: { orderByFields: ['MNFC DESC'] },
+  });
+  assert.equal(node.popupInfo.title, '{FCC} of {NAME}');
 });

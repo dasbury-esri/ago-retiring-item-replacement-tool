@@ -175,16 +175,22 @@ export function nodeAt(doc, path) {
  * Decide whether a location can be fixed by swapping item ID and service URL.
  * Returns { fixable: false, reason } or { fixable: true, replacement, oldUrl, newUrl, changes }.
  * target picks a later item from replacementChain(); the default is the direct replacement.
+ * chosen means the user named target themselves, so what the table lists is not consulted.
  * Schema compatibility is checked separately, against the live services.
  */
-export function planSwap(location, node, lookup, target) {
+export function planSwap(location, node, lookup, target, chosen = false) {
   const no = (reason) => ({ fixable: false, reason });
-  const targets = new Set(location.candidates.map((entry) => entry.replacementIds.join(',')));
-  if (targets.size !== 1) return no('Several retiring items share this service URL and they have different replacements.');
-  const sample = location.candidates[0];
-  if (sample.replacementIds.length === 0) return no(sample.replacementNote);
-  if (sample.replacementIds.length > 1) return no('The table lists more than one replacement; choose manually.');
-  const replacement = target || lookup.items.get(sample.replacementIds[0]);
+  let replacement = target;
+  if (chosen) {
+    if (lookup.byId.has(replacement.id)) return no('That item is itself on the retirement list.');
+  } else {
+    const targets = new Set(location.candidates.map((entry) => entry.replacementIds.join(',')));
+    if (targets.size !== 1) return no('Several retiring items share this service URL and they have different replacements.');
+    const sample = location.candidates[0];
+    if (sample.replacementIds.length === 0) return no(sample.replacementNote);
+    if (sample.replacementIds.length > 1) return no('The table lists more than one replacement; choose manually.');
+    replacement = target || lookup.items.get(sample.replacementIds[0]);
+  }
   if (!replacement) return no('The replacement item could not be read.');
   if (!node || typeof node.url !== 'string') return no('No service URL at this location to swap.');
   const oldParts = serviceParts(node.url);
@@ -214,25 +220,39 @@ export function applySwap(doc, path, changes) {
   const copy = structuredClone(doc);
   const node = nodeAt(copy, path);
   for (const change of changes) {
-    if (node[change.key] !== change.from) throw new Error(`Expected ${change.key} to be "${change.from}"`);
+    if (JSON.stringify(node[change.key]) !== JSON.stringify(change.from)) throw new Error(`${change.key} is not what it was when the swap was planned`);
     node[change.key] = change.to;
   }
   return copy;
 }
 
-function compareLayer(label, oldInfo, newInfo, problems) {
+const OID = 'esriFieldTypeOID';
+const tiled = (info) => /TilesOnly/i.test(info.capabilities || '');
+
+function compareLayer(label, oldInfo, newInfo, out, layerId = null) {
+  const block = (text) => { out.problems.push(text); out.blocking.push(text); };
   if ((oldInfo.geometryType || null) !== (newInfo.geometryType || null)) {
-    problems.push(`${label}geometry type differs (${oldInfo.geometryType} vs ${newInfo.geometryType})`);
+    block(`${label}geometry type differs (${oldInfo.geometryType} vs ${newInfo.geometryType})`);
   }
-  for (const key of ['pixelType', 'bandCount']) {
-    if (oldInfo[key] !== newInfo[key]) problems.push(`${label}${key} differs (${oldInfo[key]} vs ${newInfo[key]})`);
+  for (const key of ['pixelType', 'bandCount', 'serviceDataType']) {
+    if (oldInfo[key] !== newInfo[key]) block(`${label}${key} differs (${oldInfo[key]} vs ${newInfo[key]})`);
+  }
+  if ((oldInfo.pixelType || newInfo.pixelType) && tiled(oldInfo) !== tiled(newInfo)) {
+    block(`${label}one image service is tiled and the other is dynamic, so the layer type would have to change`);
   }
   const fields = new Map((newInfo.fields || []).map((field) => [field.name.toLowerCase(), field]));
+  const brief = ({ name, alias, type }) => ({ name, alias: alias || name, type: type.replace('esriFieldType', '') });
+  const oid = (info) => (info.fields || []).find((field) => field.type === OID)?.name || null;
   for (const field of oldInfo.fields || []) {
-    if (field.type === 'esriFieldTypeOID') continue; // system row ID; its name varies between services
+    if (field.type === OID) continue; // system row ID; its name varies between services
     const match = fields.get(field.name.toLowerCase());
-    if (!match) problems.push(`${label}field ${field.name} is missing`);
-    else if (match.type !== field.type) problems.push(`${label}field ${field.name} changes type`);
+    if (match && match.type === field.type) continue;
+    const text = match ? `${label}field ${field.name} changes type` : `${label}field ${field.name} is missing`;
+    out.problems.push(text);
+    out.fields.push({
+      name: field.name, issue: match ? 'type' : 'missing', text, layerId, old: brief(field), now: match ? brief(match) : null,
+      options: (newInfo.fields || []).filter((other) => other.type !== OID).map(brief), oldOid: oid(oldInfo), newOid: oid(newInfo),
+    });
   }
 }
 
@@ -240,21 +260,24 @@ function compareLayer(label, oldInfo, newInfo, problems) {
  * Compare old and new service descriptions. For a single layer pass its JSON; for a whole
  * service pass the "/layers" response ({layers, tables}). "Same" means: every old layer exists
  * under the same id, with the same geometry, and every old field exists with the same type.
+ * blocking lists the differences that rule a swap out; fields lists missing or retyped fields,
+ * which matter only if the layer being swapped uses them.
  */
 export function compareSchemas(oldInfo, newInfo) {
-  const problems = [];
+  const out = { problems: [], blocking: [], fields: [] };
+  const block = (text) => { out.problems.push(text); out.blocking.push(text); };
   const list = (info) => [...(info.layers || []), ...(info.tables || [])];
   if (oldInfo.layers || oldInfo.tables) {
     const next = new Map(list(newInfo).map((layer) => [layer.id, layer]));
     for (const layer of list(oldInfo)) {
-      if (!next.has(layer.id)) problems.push(`layer ${layer.id} (${layer.name}) is missing`);
-      else compareLayer(`layer ${layer.id}: `, layer, next.get(layer.id), problems);
+      if (!next.has(layer.id)) block(`layer ${layer.id} (${layer.name}) is missing`);
+      else compareLayer(`layer ${layer.id}: `, layer, next.get(layer.id), out, layer.id);
     }
-    if (!list(oldInfo).length) problems.push('the retiring service lists no layers to compare');
+    if (!list(oldInfo).length) block('the retiring service lists no layers to compare');
   } else if (oldInfo.fields || oldInfo.pixelType) {
-    compareLayer('', oldInfo, newInfo, problems);
+    compareLayer('', oldInfo, newInfo, out);
   } else {
-    problems.push('nothing comparable was found in the retiring service description');
+    block('nothing comparable was found in the retiring service description');
   }
-  return { same: problems.length === 0, problems };
+  return { same: out.problems.length === 0, ...out };
 }

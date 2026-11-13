@@ -47,6 +47,14 @@ async function retirementRows() {
   }
 }
 
+const brief = (item) => ({ id: item.id, title: item.title, type: item.type, url: item.url,
+  newVersionId: item.id in LINK_FIXES ? LINK_FIXES[item.id] : newVersionLink(item.description, item.id),
+  similarId: newVersionLink(item.description, item.id, /similar\s+item/i),
+  deprecated: item.contentStatus === 'deprecated', retires: retirementDate(item.description) });
+
+/** One item the signed-in user can see, in the same shape as the lookup's items. */
+export const itemMeta = async (id, token) => brief(await request(`${SHARING}/content/items/${id}`, { token }));
+
 /** Read public item metadata for many IDs, 50 per search request. IDs that are not public are absent. */
 async function publicItems(ids) {
   const items = new Map();
@@ -55,10 +63,7 @@ async function publicItems(ids) {
   await pool(batches, 4, async (batch) => {
     const page = await request(`${SHARING}/search`, { q: `id:(${batch.join(' OR ')})`, num: 100 });
     for (const item of page.results) {
-      items.set(item.id, { id: item.id, title: item.title, type: item.type, url: item.url,
-        newVersionId: item.id in LINK_FIXES ? LINK_FIXES[item.id] : newVersionLink(item.description, item.id),
-        similarId: newVersionLink(item.description, item.id, /similar\s+item/i),
-        deprecated: item.contentStatus === 'deprecated', retires: retirementDate(item.description) });
+      items.set(item.id, brief(item));
     }
   });
   return items;
@@ -163,13 +168,25 @@ export async function jsonResources(id, token) {
 // ---- Step c: compare services and write the fix ------------------------------------------
 
 /** Read a service or layer description. The token is only ever sent to arcgis.com hosts. */
-export async function serviceInfo(url, token) {
+export async function serviceInfo(url, token, params = {}) {
   try {
-    return await request(url);
+    return await request(url, params);
   } catch (error) {
     if (!token || !/\.arcgis\.com$/i.test(new URL(url).hostname)) throw error;
-    return request(url, { token });
+    return request(url, { ...params, token });
   }
+}
+
+/** The five most common values of a field, as [{ value, count }], for judging a field mapping. */
+export async function topValues(layerUrl, field, oidField, token) {
+  const page = await serviceInfo(`${layerUrl}/query`, token, {
+    where: '1=1', returnGeometry: false, groupByFieldsForStatistics: field, orderByFields: 'n DESC', resultRecordCount: 5,
+    outStatistics: JSON.stringify([{ statisticType: 'count', onStatisticField: oidField, outStatisticFieldName: 'n' }]),
+  });
+  return page.features.map(({ attributes }) => {
+    const key = Object.keys(attributes).find((name) => name.toLowerCase() === field.toLowerCase());
+    return { value: attributes[key], count: attributes.n ?? attributes.N };
+  });
 }
 
 /** Compare the retiring and replacement services behind a planned swap. */
@@ -178,7 +195,12 @@ export async function schemaCheck(oldUrl, newUrl, token) {
   const whole = parts.layer === null && /^(map|feature)server$/.test(parts.kind);
   const suffix = whole ? '/layers' : '';
   const [before, after] = await Promise.all([serviceInfo(oldUrl + suffix, token), serviceInfo(newUrl + suffix, token)]);
-  return compareSchemas(before, after);
+  const result = compareSchemas(before, after);
+  for (const field of result.fields) {
+    field.oldLayer = oldUrl + (field.layerId === null ? '' : `/${field.layerId}`);
+    field.newLayer = newUrl + (field.layerId === null ? '' : `/${field.layerId}`);
+  }
+  return result;
 }
 
 export function updateItemData(item, textValue, token) {

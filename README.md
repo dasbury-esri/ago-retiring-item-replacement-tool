@@ -11,8 +11,8 @@ A static browser app. No backend, no build step, no dependencies.
    for an administrator) and reads each one for retiring item IDs and service URLs.
    Filters: owner (administrators), sharing level, item type, title/tag text.
 3. **Fix** — for layers in a Web Map, Web Scene or Group Layer whose replacement is the same
-   service type with the same schema, offers a swap of item ID and service URL, with an optional
-   layer rename. Everything else is reported with its location and the listed replacement.
+   service type with a compatible schema, offers a swap of item ID and service URL, with an
+   optional layer rename. Everything else is reported with its location and the listed replacement.
 
 A replacement can itself be deprecated and link to a newer version. The tool says so, and where
 a newer version exists it offers a choice between the next version and the latest; each choice
@@ -53,19 +53,44 @@ one-to-one replacement. The tool shows that link as information and does not off
 
 Items that could not be read are listed after a scan; they are not confirmed clean.
 
-## What "same schema" means
+## What the schema check decides
 
-Every layer of the retiring service exists in the replacement under the same layer ID, with the
-same geometry type, and every field exists with the same type (the ObjectID field is ignored).
-Extra fields in the replacement are fine. Field values, aliases and drawing are not compared:
-open the item after a swap and look at it.
+The retiring and replacement services are compared layer by layer (the ObjectID field is ignored;
+extra fields in the replacement are fine).
+
+- **Not offered:** a layer ID is missing, the geometry type differs, or for image services the
+  pixel type, band count or data type differs, or one is tiled and the other dynamic.
+- **Offered with a note:** a field is missing or has a different type, but the layer's own
+  settings do not use it.
+- **Offered with a warning:** a field the layer uses has a different type.
+- **Offered once you decide:** a field the layer uses is missing. Choose a field to use instead,
+  or choose to leave the old name in place. A field with the same alias and type is preselected.
+  "Compare values" shows the five most common values of the old field and the chosen one.
+
+`fields.js` lists exactly where a field name is recognised in a layer's settings (renderer and
+other `…field…` keys, `{NAME}` in pop-up text, `$feature.NAME` in Arcade, `[NAME]` in label
+expressions, and the bare word in `definitionExpression`). Uses outside the item being fixed,
+such as an app that filters the layer, are not looked at. Field values are compared only when you
+ask; drawing is never compared: open the item after a swap and look at it.
+
+## Choosing your own replacement
+
+Each layer has "Use a different replacement item". Paste an item ID or item page address; the
+item gets the same checks as a listed replacement and is labelled as your choice, not Esri's.
+This is the only way to swap a layer whose retiring item has no replacement listed.
 
 ## What a swap does
 
-Re-reads the item and stops if it changed since the scan; downloads the current item data as a
-backup file; changes only `url`, `itemId` and (if ticked) `title` on that one layer; saves; reads
-the item back and confirms the new values. To undo, restore the downloaded file with ArcGIS
-Assistant or the item's update operation.
+Re-reads the item and stops if it changed since the scan; the first time an item is changed,
+downloads its current data as a backup file and keeps a copy in memory; changes only `url`,
+`itemId`, (if ticked) `title` and (if you mapped a field) the settings that name that field, on
+that one layer; saves; reads the item back and confirms the new values. "Apply all swaps that are
+ready" does the same for every ready layer of an item in one save.
+
+**Undo.** "Undo: restore the backup" writes the in-memory backup back, returning the item to how
+it was before the first swap in this page session. After a reload, "Restore from a backup file…"
+does the same from the downloaded file. Both replace the whole item data, so later changes made
+elsewhere are lost; a copy of anything the tool does not already hold is downloaded first.
 
 ## Limits
 
