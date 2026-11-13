@@ -55,6 +55,15 @@ const brief = (item) => ({ id: item.id, title: item.title, type: item.type, url:
 /** One item the signed-in user can see, in the same shape as the lookup's items. */
 export const itemMeta = async (id, token) => brief(await request(`${SHARING}/content/items/${id}`, { token }));
 
+/**
+ * IDs of items ArcGIS itself records as using this one (what the item page shows as "Used by").
+ * Owners and administrators only, and not every kind of reference is recorded.
+ */
+export async function recordedDependents(id, token) {
+  const page = await request(`${SHARING}/content/items/${id}/dependencies/listDependentsTo`, { token, num: 100 });
+  return (page.list || []).filter((entry) => /^[0-9a-f]{32}$/.test(entry.id || '')).map((entry) => entry.id);
+}
+
 /** Read public item metadata for many IDs, 50 per search request. IDs that are not public are absent. */
 async function publicItems(ids) {
   const items = new Map();

@@ -69,9 +69,22 @@ extra fields in the replacement are fine).
 
 `fields.js` lists exactly where a field name is recognised in a layer's settings (renderer and
 other `…field…` keys, `{NAME}` in pop-up text, `$feature.NAME` in Arcade, `[NAME]` in label
-expressions, and the bare word in `definitionExpression`). Uses outside the item being fixed,
-such as an app that filters the layer, are not looked at. Field values are compared only when you
+expressions, and the bare word in `definitionExpression`). Field values are compared only when you
 ask; drawing is never compared: open the item after a swap and look at it.
+
+## Items that use an affected item
+
+A web map can be used by a story, dashboard or other app, and that app can filter or style the
+map's layers itself. While scanning, the tool notes every item ID each scanned item mentions.
+An affected item then lists the scanned items that mention it, directly or through another item
+(up to three steps). It also asks ArcGIS for the items it records as using this one (the item
+page's "Used by", for owners and administrators) and lists any the scan did not cover.
+
+When a swap involves a missing or retyped field, the text of each of those items is searched for
+the field name and the items that mention it are listed. They are never changed by a swap.
+
+Only items the scan covered can be found this way, so scan every item type and owner for the
+fullest answer. A mention is a text match on an ID or a whole-word field name, not proof of use.
 
 ## Choosing your own replacement
 

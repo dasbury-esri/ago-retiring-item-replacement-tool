@@ -1,7 +1,8 @@
 import { CLIENT_ID } from './config.js';
 import { currentSession, signIn, signOut } from './auth.js';
 import {
-  DATA_LIMIT, itemBytes, itemData, itemMeta, jsonResources, loadLookup, orgUsers, pool, portalSelf, schemaCheck, searchItems,
+  DATA_LIMIT, itemBytes, itemData, itemMeta, jsonResources, loadLookup, orgUsers, pool, portalSelf, recordedDependents, schemaCheck,
+  searchItems,
   topValues, typeCounts, updateItemData,
 } from './arcgis.js';
 import { describeUses, fieldUses, renameFields } from './fields.js';
@@ -10,7 +11,7 @@ import { FIXABLE_TYPES, applySwap, findReferences, nodeAt, planSwap, pointer, re
 import { GROUPS, NOT_SCANNED, RESOURCE_TYPES, isKnownType, isScanned } from './types.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { session: null, self: null, lookup: null, results: [], unread: [], scanned: 0, stop: false };
+const state = { session: null, self: null, lookup: null, results: [], unread: [], scanned: 0, stop: false, mentions: new Map() };
 
 function h(tag, attrs = {}, ...children) {
   const element = document.createElement(tag);
@@ -133,7 +134,7 @@ function buildQuery(form) {
 async function scan() {
   const { q, types } = buildQuery(new FormData($('filters')));
   if (!types.size) return status('Choose at least one item type.');
-  Object.assign(state, { results: [], unread: [], scanned: 0, stop: false });
+  Object.assign(state, { results: [], unread: [], scanned: 0, stop: false, mentions: new Map() });
   $('results').replaceChildren();
   $('scan').disabled = true;
   $('stop').disabled = false;
@@ -167,9 +168,9 @@ async function scan() {
   renderSummary();
 }
 
-async function scanItem(item) {
-  const documents = [{ name: 'item URL', doc: { url: item.url || '' } }];
-  const unread = (reason) => state.unread.push({ item, reason });
+/** Everything readable in an item, as [{ name, text, doc }]. unread is called with each reason something was not read. */
+async function readItem(item, unread) {
+  const documents = [];
   try {
     const body = await itemBytes(item.id, state.session.token);
     if (body.tooLarge) {
@@ -181,18 +182,84 @@ async function scanItem(item) {
     }
     if (RESOURCE_TYPES.has(item.type)) {
       const resources = await jsonResources(item.id, state.session.token);
-      for (const entry of resources.documents) documents.push({ name: entry.name, doc: parse(entry.text) });
+      for (const entry of resources.documents) documents.push({ name: entry.name, text: entry.text, doc: parse(entry.text) });
       if (resources.skipped) unread(`${count(resources.skipped, 'resource file')} beyond the first ${resources.limit} not read`);
     }
   } catch (error) {
     unread(error.message);
   }
+  return documents;
+}
+
+async function scanItem(item) {
+  const read = await readItem(item, (reason) => state.unread.push({ item, reason }));
+  // Remember every item ID this item mentions, so "used by" can be answered after the scan.
+  const ids = new Set(read.flatMap((document) => document.text.toLowerCase().match(/\b[0-9a-f]{32}\b/g) || []));
+  ids.delete(item.id);
+  for (const id of ids) {
+    if (!state.mentions.has(id)) state.mentions.set(id, []);
+    state.mentions.get(id).push(item);
+  }
+  const documents = [{ name: 'item URL', doc: { url: item.url || '' } }, ...read];
   const locations = documents.flatMap((document) =>
     findReferences(document.doc, state.lookup).map((location) => ({ ...location, document })));
   if (!locations.length) return;
   const result = { item, locations };
   state.results.push(result);
   $('results').append(renderItem(result));
+}
+
+/**
+ * Scanned items that mention this item's ID, directly or through another item (a story that
+ * embeds an app that uses the map), as [{ item, via }].
+ */
+function usedBy(id) {
+  const found = new Map();
+  let frontier = [{ id, item: null }];
+  for (let depth = 0; depth < 3 && frontier.length; depth += 1) {
+    const next = [];
+    for (const from of frontier) {
+      for (const item of state.mentions.get(from.id) || []) {
+        if (item.id === id || found.has(item.id)) continue;
+        found.set(item.id, { item, via: from.item });
+        next.push({ id: item.id, item });
+      }
+    }
+    frontier = next;
+  }
+  return [...found.values()];
+}
+
+/** Items using this one that ArcGIS records but the scan did not cover. Empty when that cannot be read. */
+async function recordedExtras(result) {
+  try {
+    const known = new Set([result.item.id, ...usedBy(result.item.id).map((entry) => entry.item.id)]);
+    const ids = (await recordedDependents(result.item.id, state.session.token)).filter((id) => !known.has(id));
+    return await Promise.all(ids.slice(0, 25).map((id) => itemMeta(id, state.session.token).catch(() => ({ id, title: id, type: 'not readable' }))));
+  } catch {
+    return [];
+  }
+}
+
+const texts = new Map();
+/** The readable text of an item, read once per page session. */
+function itemText(item) {
+  if (!texts.has(item.id)) texts.set(item.id, readItem(item, () => {}).then((documents) => documents.map((document) => document.text).join('\n')));
+  return texts.get(item.id);
+}
+
+/** Which of the items using this one mention any of the field names, as [{ item, hits: [[name, count]] }]. */
+async function dependentMentions(result, names) {
+  const items = [...usedBy(result.item.id).map((entry) => entry.item), ...await result.extras].slice(0, 40);
+  if (!items.length) return null;
+  const found = [];
+  await pool(items, 4, async (item) => {
+    const text = await itemText(item);
+    const hits = names.map((name) => [name, (text.match(new RegExp(`(?<!\\w)${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\w)`, 'g')) || []).length])
+      .filter(([, times]) => times);
+    if (hits.length) found.push({ item, hits });
+  });
+  return found;
 }
 
 function parse(text) {
@@ -202,6 +269,8 @@ function parse(text) {
 // ---- Results ------------------------------------------------------------------------------
 
 function renderSummary() {
+  // Items scanned after one was opened may use it too.
+  for (const result of state.results) if (result.extras) result.showUses();
   const unread = state.unread.length ? h('details', {}, h('summary', {}, `${count(state.unread.length, 'item')} could not be fully read`),
     h('ul', {}, state.unread.map(({ item, reason }) => h('li', {}, itemLink(item.id, item.title), ` — ${reason}`)))) : null;
   $('results').prepend(h('div', { class: 'summary' },
@@ -216,6 +285,7 @@ function renderItem(result) {
   const { item } = result;
   const list = h('div');
   const note = h('span');
+  const uses = h('div', { class: 'location' });
   const fixable = FIXABLE_TYPES.has(item.type);
   const all = h('button', { hidden: true, onclick: () => save(result, readySwaps(result).map((location) => ({ location, ...location.ready() }))) });
   const undo = h('button', { hidden: true, onclick: () => restore(result, result.backup.text, 'the backup taken before the first swap', note) }, 'Undo: restore the backup');
@@ -233,7 +303,23 @@ function renderItem(result) {
       h('div', { class: 'action' }, itemLink(item.id, 'Open item page'), all, undo,
         fixable ? h('button', { onclick: () => file.click() }, 'Restore from a backup file…') : null, file),
       note),
+    uses,
     list);
+  result.showUses = () => {
+    const found = usedBy(item.id);
+    const name = (entry) => [itemLink(entry.id, entry.title), h('span', { class: 'meta' }, ` ${entry.type}${entry.owner ? ` · ${entry.owner}` : ''}`)];
+    const extra = h('div');
+    uses.replaceChildren(
+      h('div', {}, found.length ? `Used by ${count(found.length, 'other scanned item')}:` : 'No other scanned item mentions this one.',
+        h('span', { class: 'meta' }, ' Only items covered by this scan are searched; scan all item types and owners for the fullest answer.')),
+      found.length ? h('ul', { class: 'problems' }, found.map(({ item: other, via }) => h('li', {}, name(other), via ? ` — through ${via.title}` : ''))) : '',
+      extra);
+    result.extras ??= recordedExtras(result);
+    result.extras.then((items) => {
+      if (items.length) extra.replaceChildren(`ArcGIS also records ${count(items.length, 'item')} using this one that this scan did not cover: `,
+        ...items.flatMap((other, index) => [index ? ', ' : '', ...name(other)]));
+    });
+  };
   result.fill = () => list.replaceChildren(...result.locations.map((location) => renderLocation(result, location)));
   result.refresh = () => {
     const ready = readySwaps(result).length;
@@ -244,6 +330,7 @@ function renderItem(result) {
   details.addEventListener('toggle', () => {
     if (!details.open || details.dataset.filled) return;
     details.dataset.filled = '1';
+    result.showUses();
     result.fill();
   });
   return details;
@@ -378,12 +465,23 @@ function renderSwap(result, location, node, target, direct, chosen) {
     const selects = missing.map(({ field }) => fieldPicker(field));
     checks.replaceChildren(
       unused.length ? h('div', {}, `Not in the replacement, or a different type there, but not used by this layer's own settings: ${unused.join(', ')}. ` +
-        'Anything outside this item that uses them (apps, Arcade in other items) is not checked.') : '',
+        'Items that use this one are checked for them below, as far as this scan and ArcGIS can see.') : '',
       ...retyped.map(({ field, uses }) => h('div', { class: 'bad' },
         `Field ${field.name} is used by this layer's ${describeUses(uses)} and changes type (${field.old.type} to ${field.now.type}). Check the layer after swapping.`)),
       ...missing.map(({ field, uses }, index) => h('div', { class: 'action' },
         h('span', { class: 'bad' }, `Field ${field.name} (“${field.old.alias}”, ${field.old.type}) is used by this layer's ${describeUses(uses)} and is not in the replacement.`),
         h('label', {}, 'Use instead ', selects[index].select), selects[index].compare, selects[index].values)));
+
+    // Other items that use this one can filter or style the layer by the same fields.
+    if (schema.fields.length) {
+      const others = h('div', {}, 'Checking the items that use this one for these fields…');
+      checks.append(others);
+      dependentMentions(result, schema.fields.map((field) => field.name)).then((found) => others.replaceChildren(...(!found ? [] : found.length
+        ? [h('span', { class: 'bad' }, 'Items that use this one mention these fields. They are not changed by a swap; check each by hand:'),
+          h('ul', { class: 'problems' }, found.map(({ item: other, hits }) => h('li', {}, itemLink(other.id, other.title),
+            ` — ${hits.map(([name, times]) => `${name} ×${times}`).join(', ')}`)))]
+        : ['No item that uses this one mentions these fields.'])), () => others.replaceChildren('The items that use this one could not be checked.'));
+    }
 
     // Renaming is on by default, except when only the item changes and the layer is otherwise the same.
     const rename = h('input', { type: 'checkbox', checked: !plan.sameService });
@@ -560,7 +658,7 @@ function download(name, text, type = 'application/json') {
 
 function exportCsv() {
   const cell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-  const rows = [['item_id', 'title', 'type', 'owner', 'sharing', 'document', 'location', 'retiring_ids', 'retiring_titles', 'replacement_ids', 'replacement_source', 'latest_version_id', 'status']];
+  const rows = [['item_id', 'title', 'type', 'owner', 'sharing', 'document', 'location', 'retiring_ids', 'retiring_titles', 'replacement_ids', 'replacement_source', 'latest_version_id', 'status', 'used_by']];
   for (const { item, locations } of state.results) {
     for (const location of locations) {
       rows.push([item.id, item.title, item.type, item.owner, item.access, location.document.name, pointer(location.path),
@@ -568,7 +666,7 @@ function exportCsv() {
         [...new Set(location.candidates.flatMap((entry) => entry.replacementIds))].join(' '),
         [...new Set(location.candidates.filter((entry) => entry.replacementIds.length).map((entry) => entry.replacementSource))].join(' '),
         replacementChain(location.candidates[0], state.lookup).at(-1)?.id || '',
-        location.status || 'Not opened']);
+        location.status || 'Not opened', usedBy(item.id).map((entry) => entry.item.id).join(' ')]);
     }
   }
   download('retiring-item-references.csv', rows.map((row) => row.map(cell).join(',')).join('\r\n'), 'text/csv');
