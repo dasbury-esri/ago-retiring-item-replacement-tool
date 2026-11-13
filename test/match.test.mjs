@@ -108,7 +108,7 @@ test('self-replacement is not a swap; same-service replacement changes only the 
     new Map([[OLD, { url: OLD_URL }], [NEW, { id: NEW, url: OLD_URL }], [GONE, {}]]),
     { [OLD]: { id: NEW, note: 'why' }, [TWIN]: { id: NEW, note: 'unused' } });
   assert.deepEqual([suggested.byId.get(OLD).replacementIds, suggested.byId.get(OLD).replacementSource], [[NEW], 'suggestion']);
-  assert.deepEqual([suggested.byId.get(TWIN).replacementIds, suggested.byId.get(TWIN).replacementSource], [[GONE], 'table']);
+  assert.deepEqual([suggested.byId.get(TWIN).replacementIds, suggested.byId.get(TWIN).replacementSource], [[GONE], 'Esri replacement table']);
   assert.equal(suggested.byUrl.size, 0);
 });
 
@@ -123,12 +123,12 @@ test('description link wins unless only the table\'s replacement can be read', (
   );
   assert.deepEqual([filled.byId.get(OLD).replacementIds, filled.byId.get(OLD).replacementSource], [[NEW], 'description']);
   assert.deepEqual(filled.byId.get(TWIN).replacementIds, [NEW]);
-  assert.deepEqual([filled.byId.get(GONE).replacementIds, filled.byId.get(GONE).replacementSource, filled.byId.get(GONE).alternateId], [[OLD], 'table', NEW]);
+  assert.deepEqual([filled.byId.get(GONE).replacementIds, filled.byId.get(GONE).replacementSource, filled.byId.get(GONE).alternateId], [[OLD], 'Esri replacement table', NEW]);
   const readable = (source) => new Map([[OLD, { newVersionId: NEW }], [NEW, {}], ...source]);
   const disagree = buildLookup([{ item_id: OLD, superceded_by: GONE }], readable([[GONE, {}]])).byId.get(OLD);
   assert.deepEqual([disagree.replacementIds, disagree.replacementSource, disagree.alternateId], [[NEW], 'description', GONE]);
   const agree = buildLookup([{ item_id: OLD, superceded_by: NEW }], readable([])).byId.get(OLD);
-  assert.deepEqual([agree.replacementIds, agree.replacementSource, agree.alternateId], [[NEW], 'table', null]);
+  assert.deepEqual([agree.replacementIds, agree.replacementSource, agree.alternateId], [[NEW], 'Esri replacement table', null]);
 });
 
 test('a deprecated replacement leads on to its newer version, and either can be the swap target', () => {

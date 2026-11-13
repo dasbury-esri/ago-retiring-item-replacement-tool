@@ -553,7 +553,7 @@ function fieldPicker(field) {
   return { select, compare, values };
 }
 
-/** Say where the replacement came from when it is not simply the table's. */
+/** Say where the replacement came from when it is not simply the Esri replacement table's. */
 function sourceNote(entry) {
   if (entry.replacementSource === 'suggestion') {
     return ` — suggested by this tool, not by Esri (the table says "${entry.tableText}"). ${entry.suggestionNote}`;
@@ -658,13 +658,13 @@ function download(name, text, type = 'application/json') {
 
 function exportCsv() {
   const cell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-  const rows = [['item_id', 'title', 'type', 'owner', 'sharing', 'document', 'location', 'retiring_ids', 'retiring_titles', 'replacement_ids', 'replacement_source', 'latest_version_id', 'status', 'used_by']];
+  const rows = [['item_id', 'title', 'type', 'owner', 'sharing', 'source_document', 'source_location', 'retiring_ids', 'retiring_titles', 'replacement_ids', 'replacement_reference', 'latest_version_id', 'status', 'used_by']];
   for (const { item, locations } of state.results) {
     for (const location of locations) {
       rows.push([item.id, item.title, item.type, item.owner, item.access, location.document.name, pointer(location.path),
         location.candidates.map((entry) => entry.id).join(' '), location.candidates.map((entry) => entry.title).join(' | '),
         [...new Set(location.candidates.flatMap((entry) => entry.replacementIds))].join(' '),
-        [...new Set(location.candidates.filter((entry) => entry.replacementIds.length).map((entry) => entry.replacementSource))].join(' '),
+        [...new Set(location.candidates.filter((entry) => entry.replacementIds.length).map((entry) => entry.replacementSource))].join('; '),
         replacementChain(location.candidates[0], state.lookup).at(-1)?.id || '',
         location.status || 'Not opened', usedBy(item.id).map((entry) => entry.item.id).join(' ')]);
     }

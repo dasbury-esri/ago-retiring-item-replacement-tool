@@ -95,8 +95,8 @@ export function buildLookup(rows, items, suggestions = {}) {
       id: row.item_id, title: row.title, type: row.item_type, owner: row.owner,
       url: meta.url || null, replacementIds: replacement.ids, replacementNote: replacement.note,
       tableText: String(row.superceded_by || '').trim(),
-      // 'table' also covers the usual case where table and description agree
-      replacementSource: suggestion ? 'suggestion' : fromDescription && (other.length || !tableIds.length) ? 'description' : 'table',
+      // 'Esri replacement table' also covers the usual case where table and description agree
+      replacementSource: suggestion ? 'suggestion' : fromDescription && (other.length || !tableIds.length) ? 'description' : 'Esri replacement table',
       suggestionNote: suggestion ? suggestion.note : '',
       alternateId: other[0] || null,   // what the source that was not used says, when it differs
     };
