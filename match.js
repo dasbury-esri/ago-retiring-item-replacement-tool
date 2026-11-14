@@ -174,7 +174,8 @@ export function nodeAt(doc, path) {
 /**
  * Decide whether a location can be fixed by swapping item ID and service URL.
  * Returns { fixable: false, reason } or { fixable: true, replacement, oldUrl, newUrl, changes }.
- * target picks a later item from replacementChain(); the default is the direct replacement.
+ * target picks a later item from replacementChain(), or one of several listed replacements;
+ * the default is the direct replacement.
  * chosen means the user named target themselves, so what the table lists is not consulted.
  * Schema compatibility is checked separately, against the live services.
  */
@@ -188,8 +189,12 @@ export function planSwap(location, node, lookup, target, chosen = false) {
     if (targets.size !== 1) return no('Several retiring items share this service URL and they have different replacements.');
     const sample = location.candidates[0];
     if (sample.replacementIds.length === 0) return no(sample.replacementNote);
-    if (sample.replacementIds.length > 1) return no('The table lists more than one replacement; choose manually.');
-    replacement = target || lookup.items.get(sample.replacementIds[0]);
+    if (sample.replacementIds.length > 1) {
+      // One retiring item split into several: the user picks which of the listed items this layer becomes.
+      if (!target || !sample.replacementIds.includes(target.id)) return no(`Esri lists ${sample.replacementIds.length} replacements for this item; choose one.`);
+    } else {
+      replacement = target || lookup.items.get(sample.replacementIds[0]);
+    }
   }
   if (!replacement) return no('The replacement item could not be read.');
   if (!node || typeof node.url !== 'string') return no('No service URL at this location to swap.');

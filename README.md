@@ -86,6 +86,19 @@ the field name and the items that mention it are listed. They are never changed 
 Only items the scan covered can be found this way, so scan every item type and owner for the
 fullest answer. A mention is a text match on an ID or a whole-word field name, not proof of use.
 
+## Rescanning one item
+
+Each listed item has "Rescan this item". It reads that item again — details, data and resources —
+and redraws its entry, so changes made outside this tool show without a full scan. An item with
+nothing left to fix stays listed as "no references left" and drops out of the count and the CSV.
+An item the scan did not list cannot be rescanned this way; run a scan filtered to it instead.
+
+## Several listed replacements
+
+Where Esri's table lists more than one replacement for an item (one layer split into several),
+the layer shows a "Replace with" list of them. The one you pick gets the usual checks and the
+layer becomes that item only; add the others to the map by hand if you need them.
+
 ## Choosing your own replacement
 
 Each layer has "Use a different replacement item". Paste an item ID or item page address; the
@@ -94,7 +107,7 @@ This is the only way to swap a layer whose retiring item has no replacement list
 
 ## What a swap does
 
-Re-reads the item and stops if it changed since the scan; the first time an item is changed,
+Re-reads the item and stops if it changed since it was last read (rescan it to carry on); the first time an item is changed,
 downloads its current data as a backup file and keeps a copy in memory; changes only `url`,
 `itemId`, (if ticked) `title` and (if you mapped a field) the settings that name that field, on
 that one layer; saves; reads the item back and confirms the new values. "Apply all swaps that are

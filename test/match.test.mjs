@@ -223,3 +223,17 @@ test('field uses are found and renamed only where they are field names', () => {
   });
   assert.equal(node.popupInfo.title, '{FCC} of {NAME}');
 });
+
+test('with several listed replacements the user picks one of them', () => {
+  const A = '1'.repeat(32), B = '2'.repeat(32);
+  const url = (name) => `https://tiledimageservices.arcgis.com/Org/arcgis/rest/services/${name}/ImageServer`;
+  const split = buildLookup([{ item_id: OLD, superceded_by: `${A}, ${B}` }],
+    new Map([[OLD, { id: OLD, url: url('Chemistry') }], [A, { id: A, url: url('pH') }], [B, { id: B, url: url('Nitrogen') }]]));
+  const doc = { layers: [{ itemId: OLD, url: url('Chemistry') }] };
+  const [location] = findReferences(doc, split);
+  const node = nodeAt(doc, location.path);
+  assert.match(planSwap(location, node, split).reason, /lists 2 replacements.*choose one/);
+  assert.match(planSwap(location, node, split, { id: NEW, url: url('Other') }).reason, /choose one/);   // not one of the listed
+  const plan = planSwap(location, node, split, split.items.get(B));
+  assert.deepEqual(plan.changes, [{ key: 'url', from: url('Chemistry'), to: url('Nitrogen') }, { key: 'itemId', from: OLD, to: B }]);
+});

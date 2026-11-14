@@ -17,6 +17,19 @@ export const LINK_FIXES = {
   '8d2012a2016e484dafaac0451f9aea24': '91c6859151e84a2eacb0cfb1e38466ca',
 };
 
+// Corrections to a replacement item's service address, where the address stored in the item
+// does not answer: item ID -> { url, note }. The swap writes this address into the layer and the
+// tool says so. Remove an entry once the item is fixed.
+export const URL_FIXES = {
+  // Above and below ground biomass carbon (replaces World Biomass): the item's address answers
+  // "No proxy information found". Checked 13 November 2026.
+  'f797683411784e73975736cf4d1f3f22': {
+    url: 'https://data-gis.unep-wcmc.org/server/rest/services/Hosted/world_biomass_carbon/ImageServer',
+    note: 'The service address stored in this item does not answer ("No proxy information found"). ' +
+      'This tool uses the address that UNEP-WCMC\'s own portal now gives for the same dataset instead.',
+  },
+};
+
 // Replacements that neither Esri's table nor the items' retirement notices give. They are this
 // tool's suggestions and are labelled as such: retiring item ID -> { id, note }.
 const SENTINEL_VIEWS = {

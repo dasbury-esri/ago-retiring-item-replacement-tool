@@ -1,5 +1,5 @@
 // ArcGIS REST calls. Uses global fetch, so it also runs under Node for checks.
-import { LINK_FIXES, PORTAL, RETIREMENT_TABLE, SUGGESTIONS } from './config.js';
+import { LINK_FIXES, PORTAL, RETIREMENT_TABLE, SUGGESTIONS, URL_FIXES } from './config.js';
 import { buildLookup, compareSchemas, newVersionLink, parseReplacement, retirementDate, serviceParts } from './match.js';
 
 const SHARING = PORTAL + '/sharing/rest';
@@ -47,10 +47,14 @@ async function retirementRows() {
   }
 }
 
-const brief = (item) => ({ id: item.id, title: item.title, type: item.type, url: item.url,
+const brief = (item) => ({ id: item.id, title: item.title, type: item.type,
+  url: URL_FIXES[item.id]?.url || item.url, urlNote: URL_FIXES[item.id]?.note || null,
   newVersionId: item.id in LINK_FIXES ? LINK_FIXES[item.id] : newVersionLink(item.description, item.id),
   similarId: newVersionLink(item.description, item.id, /similar\s+item/i),
   deprecated: item.contentStatus === 'deprecated', retires: retirementDate(item.description) });
+
+/** One item's current details, in the shape search results have. */
+export const itemInfo = (id, token) => request(`${SHARING}/content/items/${id}`, { token });
 
 /** One item the signed-in user can see, in the same shape as the lookup's items. */
 export const itemMeta = async (id, token) => brief(await request(`${SHARING}/content/items/${id}`, { token }));

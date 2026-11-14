@@ -1,7 +1,7 @@
 import { CLIENT_ID } from './config.js';
 import { currentSession, signIn, signOut } from './auth.js';
 import {
-  DATA_LIMIT, itemBytes, itemData, itemMeta, jsonResources, loadLookup, orgUsers, pool, portalSelf, recordedDependents, schemaCheck,
+  DATA_LIMIT, itemBytes, itemData, itemInfo, itemMeta, jsonResources, loadLookup, orgUsers, pool, portalSelf, recordedDependents, schemaCheck,
   searchItems,
   topValues, typeCounts, updateItemData,
 } from './arcgis.js';
@@ -191,22 +191,69 @@ async function readItem(item, unread) {
   return documents;
 }
 
-async function scanItem(item) {
-  const read = await readItem(item, (reason) => state.unread.push({ item, reason }));
-  // Remember every item ID this item mentions, so "used by" can be answered after the scan.
+/** Read one item: its references to retiring items, the item IDs it mentions, and why anything was not read. */
+async function inspect(item) {
+  const reasons = [];
+  const read = await readItem(item, (reason) => reasons.push(reason));
   const ids = new Set(read.flatMap((document) => document.text.toLowerCase().match(/\b[0-9a-f]{32}\b/g) || []));
   ids.delete(item.id);
+  const documents = [{ name: 'item URL', doc: { url: item.url || '' } }, ...read];
+  const locations = documents.flatMap((document) =>
+    findReferences(document.doc, state.lookup).map((location) => ({ ...location, document })));
+  return { locations, ids, reasons };
+}
+
+/** Remember what was not read, and every item ID this item mentions, so "used by" can be answered after the scan. */
+function record(item, { ids, reasons }) {
+  for (const reason of reasons) state.unread.push({ item, reason });
   for (const id of ids) {
     if (!state.mentions.has(id)) state.mentions.set(id, []);
     state.mentions.get(id).push(item);
   }
-  const documents = [{ name: 'item URL', doc: { url: item.url || '' } }, ...read];
-  const locations = documents.flatMap((document) =>
-    findReferences(document.doc, state.lookup).map((location) => ({ ...location, document })));
-  if (!locations.length) return;
-  const result = { item, locations };
+}
+
+/** Drop everything remembered about one item, before it is read again. */
+function forget(id) {
+  state.unread = state.unread.filter((entry) => entry.item.id !== id);
+  for (const [key, items] of state.mentions) state.mentions.set(key, items.filter((item) => item.id !== id));
+  texts.delete(id);
+}
+
+async function scanItem(item) {
+  const found = await inspect(item);
+  record(item, found);
+  if (!found.locations.length) return;
+  const result = { item, locations: found.locations };
   state.results.push(result);
   $('results').append(renderItem(result));
+}
+
+/** Read one listed item again, for changes made to it since the scan (in this tool or outside it). */
+async function rescan(result, details, button, note) {
+  button.disabled = true;
+  button.textContent = 'Rescanning…';
+  try {
+    const item = await itemInfo(result.item.id, state.session.token);
+    const found = await inspect(item);
+    if (!state.results.includes(result)) return;   // a new full scan started meanwhile
+    forget(item.id);
+    record(item, found);
+    Object.assign(result, { item, locations: found.locations, extras: null });
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const message = found.reasons.length
+      ? h('span', { class: 'bad' }, `Rescanned at ${time}, but not fully read (${found.reasons.join('; ')}); ` +
+        `${count(found.locations.length, 'reference')} found in what was read.`)
+      : h('span', { class: 'good' }, `Rescanned at ${time}: ` +
+        (found.locations.length ? `${count(found.locations.length, 'reference')} to retiring items.` : 'no references to retiring items remain.'));
+    const fresh = renderItem(result, message);
+    details.replaceWith(fresh);
+    fresh.open = details.open;
+    if ($('summary')) renderSummary();
+  } catch (error) {
+    note.replaceChildren(h('span', { class: 'bad' }, `Not rescanned: ${error.message}`));
+    button.disabled = false;
+    button.textContent = 'Rescan this item';
+  }
 }
 
 /**
@@ -273,18 +320,21 @@ function renderSummary() {
   for (const result of state.results) if (result.extras) result.showUses();
   const unread = state.unread.length ? h('details', {}, h('summary', {}, `${count(state.unread.length, 'item')} could not be fully read`),
     h('ul', {}, state.unread.map(({ item, reason }) => h('li', {}, itemLink(item.id, item.title), ` — ${reason}`)))) : null;
-  $('results').prepend(h('div', { class: 'summary' },
-    h('strong', {}, count(state.results.length, 'affected item')),
-    state.results.length ? h('button', { onclick: exportCsv }, 'Export CSV') : null), unread || '');
+  const affected = state.results.filter((result) => result.locations.length).length;
+  $('summary')?.remove();
+  $('results').prepend(h('div', { id: 'summary' }, h('div', { class: 'summary' },
+    h('strong', {}, count(affected, 'affected item')),
+    affected ? h('button', { onclick: exportCsv }, 'Export CSV') : null), unread || ''));
 }
 
 const dataDocument = (result) => result.locations.find((location) => location.document.name === 'data')?.document;
 const readySwaps = (result) => result.locations.filter((location) => location.ready);
 
-function renderItem(result) {
+function renderItem(result, message) {
   const { item } = result;
   const list = h('div');
-  const note = h('span');
+  const note = h('span', {}, message);
+  const again = h('button', { onclick: () => rescan(result, details, again, note) }, 'Rescan this item');
   const uses = h('div', { class: 'location' });
   const fixable = FIXABLE_TYPES.has(item.type);
   const all = h('button', { hidden: true, onclick: () => save(result, readySwaps(result).map((location) => ({ location, ...location.ready() }))) });
@@ -298,9 +348,9 @@ function renderItem(result) {
   const details = h('details', { class: 'item' },
     h('summary', {},
       h('span', { class: 'title' }, item.title),
-      h('span', { class: 'meta' }, `${item.type} · ${item.owner} · ${item.access} · ${count(result.locations.length, 'reference')}`)),
+      h('span', { class: 'meta' }, `${item.type} · ${item.owner} · ${item.access} · ${result.locations.length ? count(result.locations.length, 'reference') : 'no references left'}`)),
     h('div', { class: 'location' },
-      h('div', { class: 'action' }, itemLink(item.id, 'Open item page'), all, undo,
+      h('div', { class: 'action' }, itemLink(item.id, 'Open item page'), again, all, undo,
         fixable ? h('button', { onclick: () => file.click() }, 'Restore from a backup file…') : null, file),
       note),
     uses,
@@ -332,6 +382,7 @@ function renderItem(result) {
     details.dataset.filled = '1';
     result.showUses();
     result.fill();
+    result.refresh();
   });
   return details;
 }
@@ -378,6 +429,17 @@ function renderLocation(result, location) {
     const step = (index) => (index === chain.length - 1 ? 'Latest version' : index === 0 ? 'Next version' : 'Later version');
     const select = h('select', {}, chain.map((item, index) => h('option', {}, `${step(index)}: ${targetLabel(item)}`)));
     select.addEventListener('change', () => show(chain[select.selectedIndex]));
+    row.insertBefore(h('label', {}, 'Replace with ', select), body);
+  }
+  // One retiring item can be replaced by several; the user picks which one this layer becomes.
+  const listed = location.candidates[0].replacementIds;
+  if (listed.length > 1) {
+    const select = h('select', {}, h('option', { value: '' }, `Choose one of ${listed.length}…`),
+      listed.map((id) => {
+        const item = state.lookup.items.get(id);
+        return h('option', { value: id, disabled: !item }, item ? targetLabel(item) : `${id} (not public; cannot be read)`);
+      }));
+    select.addEventListener('change', () => show(state.lookup.items.get(select.value)));
     row.insertBefore(h('label', {}, 'Replace with ', select), body);
   }
   show(chain[0]);
@@ -431,14 +493,17 @@ function renderSwap(result, location, node, target, direct, chosen) {
     return [action];
   }
   const superseded = plan.replacement.deprecated || plan.replacement.newVersionId;
+  const several = location.candidates[0].replacementIds.length;
   const changeBox = h('div', { class: 'change' });
   const showChanges = () => changeBox.replaceChildren(...plan.changes.map((change) => h('div', {}, describeChange(change))));
   const checks = h('div', { class: 'checks' });
   const parts = [
     h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title),
-      chosen ? ' — chosen by you, not listed by Esri.' : direct ? sourceNote(location.candidates[0]) : ''),
+      chosen ? ' — chosen by you, not listed by Esri.' : direct ? sourceNote(location.candidates[0])
+        : several > 1 ? ` — one of the ${several} replacements Esri lists. This layer becomes that one only; add the others to the map by hand if you need them.` : ''),
     superseded ? h('div', { class: 'bad' }, `This replacement is itself deprecated${plan.replacement.retires ? ` and retires ${plan.replacement.retires}` : ''}.`) : null,
     similarNote(plan.replacement.id) ? h('div', {}, similarNote(plan.replacement.id).trim()) : null,
+    plan.replacement.urlNote ? h('div', { class: 'bad' }, plan.replacement.urlNote) : null,
     changeBox,
     checks,
     action,
@@ -590,7 +655,7 @@ async function save(result, entries) {
   try {
     const token = state.session.token;
     const current = await itemData(item.id, token);
-    if (current !== document.text) throw new Error('The item changed since the scan. Scan again before fixing it.');
+    if (current !== document.text) throw new Error('The item changed since it was read. Use "Rescan this item", then fix it.');
     if (/[:\[,]\s*-?\d{16,}/.test(current)) throw new Error('The item data holds numbers too large to rewrite safely in a browser. Fix it by hand.');
     if (!result.backup) {
       result.backup = { text: current, name: backupName(item) };
