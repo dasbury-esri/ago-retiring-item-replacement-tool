@@ -7,7 +7,7 @@ import {
 } from './arcgis.js';
 import { describeUses, fieldUses, renameFields } from './fields.js';
 import { readContent } from './content.js';
-import { FIXABLE_TYPES, applySwap, findReferences, nodeAt, planSwap, pointer, replacementChain } from './match.js';
+import { FIXABLE_TYPES, applySwap, findReferences, layerSettings, nodeAt, planSwap, pointer, replacementChain } from './match.js';
 import { GROUPS, NOT_SCANNED, RESOURCE_TYPES, isKnownType, isScanned } from './types.js';
 
 const $ = (id) => document.getElementById(id);
@@ -324,7 +324,7 @@ function renderSummary() {
   $('summary')?.remove();
   $('results').prepend(h('div', { id: 'summary' }, h('div', { class: 'summary' },
     h('strong', {}, count(affected, 'affected item')),
-    affected ? h('button', { onclick: exportCsv }, 'Export CSV') : null), unread || ''));
+    affected ? h('button', { onclick: (event) => exportCsv(event.target) }, 'Export CSV') : null), unread || ''));
 }
 
 const dataDocument = (result) => result.locations.find((location) => location.document.name === 'data')?.document;
@@ -377,13 +377,15 @@ function renderItem(result, message) {
     all.textContent = `Apply all ${ready} swaps that are ready`;
     undo.hidden = !result.backup || !dataDocument(result) || result.backup.text === dataDocument(result).text;
   };
-  details.addEventListener('toggle', () => {
-    if (!details.open || details.dataset.filled) return;
+  // Build the item's contents and start its checks. Runs once, when the item is first opened or exported.
+  result.open = () => {
+    if (details.dataset.filled) return;
     details.dataset.filled = '1';
     result.showUses();
     result.fill();
     result.refresh();
-  });
+  };
+  details.addEventListener('toggle', () => { if (details.open) result.open(); });
   return details;
 }
 
@@ -484,6 +486,7 @@ async function keepInherited(plan, location, node) {
 function renderSwap(result, location, node, target, direct, chosen) {
   const run = (location.run = {});   // a later choice in the version picker supersedes this one
   location.ready = null;
+  location.checked = null;   // settles when this location's status is final
   result.refresh();
   const action = h('div', { class: 'action' });
   const plan = planSwap(location, node, state.lookup, target, chosen);
@@ -513,7 +516,7 @@ function renderSwap(result, location, node, target, direct, chosen) {
   const check = plan.sameService
     ? keepInherited(plan, location, node).then(() => { showChanges(); return { same: true, blocking: [], fields: [] }; })
     : schemaCheck(plan.oldUrl, plan.newUrl, state.session.token);
-  check.then((schema) => {
+  location.checked = check.then((schema) => {
     if (location.run !== run) return;
     if (schema.blocking.length) {
       location.status = 'Not compatible: ' + schema.blocking.join('; ');
@@ -721,20 +724,49 @@ function download(name, text, type = 'application/json') {
   setTimeout(() => URL.revokeObjectURL(link.href), 10000);
 }
 
-function exportCsv() {
+/** Local date and time for a file name, as 2026-11-14_1530. */
+function fileStamp(date = new Date()) {
+  const two = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}_${two(date.getHours())}${two(date.getMinutes())}`;
+}
+
+/** The settings a layer sets itself, for the CSV. Blank where the location is not a layer this tool could change. */
+function settingsCell(item, location) {
+  if (location.document.name !== 'data' || !FIXABLE_TYPES.has(item.type)) return '';
+  const node = nodeAt(location.document.doc, location.path);
+  if (!node || typeof node !== 'object' || typeof node.url !== 'string') return '';
+  return layerSettings(node).join('; ') || 'none';
+}
+
+async function exportCsv(button) {
+  // Items never opened have no status yet: run their checks first, a few items at a time.
+  const results = state.results.filter((result) => result.locations.length);
+  button.disabled = true;
+  let checked = 0;
+  try {
+    await pool(results, 4, async (result) => {
+      result.open();
+      await Promise.all(result.locations.map((location) => location.checked));
+      checked += 1;
+      button.textContent = `Checking ${checked} of ${results.length}…`;
+    });
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Export CSV';
+  }
   const cell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-  const rows = [['item_id', 'title', 'type', 'owner', 'sharing', 'source_document', 'source_location', 'retiring_ids', 'retiring_titles', 'replacement_ids', 'replacement_reference', 'latest_version_id', 'status', 'used_by']];
-  for (const { item, locations } of state.results) {
+  const rows = [['item_id', 'title', 'type', 'owner', 'sharing', 'source_document', 'source_location', 'retiring_ids', 'retiring_titles', 'replacement_ids', 'replacement_reference', 'latest_version_id', 'status', 'layer_settings', 'used_by']];
+  for (const { item, locations } of results) {
     for (const location of locations) {
       rows.push([item.id, item.title, item.type, item.owner, item.access, location.document.name, pointer(location.path),
         location.candidates.map((entry) => entry.id).join(' '), location.candidates.map((entry) => entry.title).join(' | '),
         [...new Set(location.candidates.flatMap((entry) => entry.replacementIds))].join(' '),
         [...new Set(location.candidates.filter((entry) => entry.replacementIds.length).map((entry) => entry.replacementSource))].join('; '),
         replacementChain(location.candidates[0], state.lookup).at(-1)?.id || '',
-        location.status || 'Not opened', usedBy(item.id).map((entry) => entry.item.id).join(' ')]);
+        location.status || 'Not checked', settingsCell(item, location), usedBy(item.id).map((entry) => entry.item.id).join(' ')]);
     }
   }
-  download('retiring-item-references.csv', rows.map((row) => row.map(cell).join(',')).join('\r\n'), 'text/csv');
+  download(`${fileStamp()}_retiring-item-references.csv`, rows.map((row) => row.map(cell).join(',')).join('\r\n'), 'text/csv');
 }
 
 start().catch((error) => status('Could not start: ' + error.message));

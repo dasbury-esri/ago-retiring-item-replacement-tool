@@ -220,6 +220,24 @@ export function planSwap(location, node, lookup, target, chosen = false) {
   return { fixable: true, replacement, oldUrl: bare, newUrl, changes, sameService };
 }
 
+/**
+ * Which display settings a layer sets itself, as a list of names. These are what a change of
+ * layer type would have to carry over; a layer with none takes everything from its service.
+ */
+export function layerSettings(node) {
+  if (!node || typeof node !== 'object') return [];
+  const definition = node.layerDefinition || {};
+  const has = (value) => value !== undefined && value !== null && value !== '';
+  return [
+    ['rendering rule', node.renderingRule],
+    ['mosaic rule', node.mosaicRule],
+    ['band selection', node.bandIds],
+    ['renderer', definition.drawingInfo?.renderer ?? node.renderer],
+    ['filter', definition.definitionExpression],
+    ['pop-up', node.popupInfo],
+  ].filter(([, value]) => has(value)).map(([name]) => name);
+}
+
 /** Return a copy of doc with the changes applied at path. Nothing else is touched. */
 export function applySwap(doc, path, changes) {
   const copy = structuredClone(doc);

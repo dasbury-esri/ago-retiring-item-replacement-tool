@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  serviceParts, parseReplacement, newVersionLink, retirementDate, replacementChain, buildLookup, findReferences, planSwap, applySwap, compareSchemas, nodeAt,
+  serviceParts, parseReplacement, newVersionLink, retirementDate, replacementChain, buildLookup, findReferences, layerSettings, planSwap, applySwap, compareSchemas, nodeAt,
 } from '../match.js';
 import { readContent } from '../content.js';
 import { describeUses, fieldUses, renameFields } from '../fields.js';
@@ -236,4 +236,13 @@ test('with several listed replacements the user picks one of them', () => {
   assert.match(planSwap(location, node, split, { id: NEW, url: url('Other') }).reason, /choose one/);   // not one of the listed
   const plan = planSwap(location, node, split, split.items.get(B));
   assert.deepEqual(plan.changes, [{ key: 'url', from: url('Chemistry'), to: url('Nitrogen') }, { key: 'itemId', from: OLD, to: B }]);
+});
+
+test('layer settings lists what the layer sets itself', () => {
+  assert.deepEqual(layerSettings({ url: 'x', itemId: 'y', title: 'Plain', opacity: 1, layerDefinition: {} }), []);
+  assert.deepEqual(layerSettings({ renderingRule: { rasterFunction: 'Hillshade' }, bandIds: [0], popupInfo: { title: 't' },
+    layerDefinition: { definitionExpression: 'A > 1', drawingInfo: { renderer: { type: 'simple' } } } }),
+  ['rendering rule', 'band selection', 'renderer', 'filter', 'pop-up']);
+  assert.deepEqual(layerSettings({ mosaicRule: null, layerDefinition: { definitionExpression: '' } }), []);
+  assert.deepEqual(layerSettings('text'), []);
 });

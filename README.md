@@ -93,6 +93,15 @@ and redraws its entry, so changes made outside this tool show without a full sca
 nothing left to fix stays listed as "no references left" and drops out of the count and the CSV.
 An item the scan did not list cannot be rescanned this way; run a scan filtered to it instead.
 
+## CSV export
+
+"Export CSV" first runs the checks for every listed item not yet opened, a few at a time, so
+each row has a real status; the button shows progress. The file is named with the local date and
+time, for example `2026-11-14_1530_retiring-item-references.csv`. One row per reference.
+`layer_settings` lists what a layer sets itself (rendering rule, mosaic rule, band selection,
+renderer, filter, pop-up) or `none`; it is blank where the reference is not a layer this tool
+could change. A "Not compatible" row with `none` is a layer with nothing of its own to carry over.
+
 ## Several listed replacements
 
 Where Esri's table lists more than one replacement for an item (one layer split into several),
