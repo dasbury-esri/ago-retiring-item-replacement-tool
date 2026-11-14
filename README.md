@@ -37,7 +37,7 @@ checks the item URL, then downloads the item data and looks at what it actually 
 | JSON or other text (web maps, scenes, apps, dashboards, notebooks, most types) | read in full |
 | a zip file (Survey123 forms, 360 VR experiences, KMZ) | text files inside are read |
 | a 7z archive or other binary | listed as not read |
-| larger than 30 MB | not downloaded; listed as not read |
+| larger than 100 MB | not read; listed as not read |
 
 StoryMap, Web Experience, Web Experience Template and QuickCapture Project items also have their
 JSON resources read (drafts and saved versions, up to 200 files).

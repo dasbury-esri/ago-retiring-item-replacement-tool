@@ -4,9 +4,30 @@ import { buildLookup, compareSchemas, newVersionLink, parseReplacement, retireme
 
 const SHARING = PORTAL + '/sharing/rest';
 
+/**
+ * fetch, tried again when the request never gets an answer. A browser reports a dropped
+ * connection only as "Failed to fetch", and a long scan makes thousands of requests. Reads are
+ * tried three times; a write is tried once, since it may have arrived.
+ */
+async function get(url, init) {
+  const tries = init?.method === 'POST' ? 1 : 3;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      if (attempt >= tries) {
+        const where = new URL(url);
+        throw new Error(`no answer from ${where.hostname}${where.pathname.replace(/^.*\/rest\//, '/…/')} after ${count(tries)} (${error.message})`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+}
+const count = (tries) => (tries === 1 ? '1 try' : `${tries} tries`);
+
 async function request(url, params = {}, method = 'GET') {
   const body = new URLSearchParams(Object.entries({ f: 'json', ...params }).filter(([, value]) => value != null));
-  const response = method === 'GET' ? await fetch(`${url}?${body}`) : await fetch(url, { method, body });
+  const response = method === 'GET' ? await get(`${url}?${body}`) : await get(url, { method, body });
   const result = await response.json();
   if (result && result.error) {
     throw Object.assign(new Error(result.error.message || 'ArcGIS error ' + result.error.code), { code: result.error.code });
@@ -134,19 +155,26 @@ export async function* searchItems(q, token, from = 0, to = Date.now()) {
 }
 
 async function text(url, token) {
-  const response = await fetch(url + (token ? `?token=${encodeURIComponent(token)}` : ''));
+  const response = await get(url + (token ? `?token=${encodeURIComponent(token)}` : ''));
   const body = await response.text();
+  if (!response.ok && !body.startsWith('{"error"')) throw new Error(`ArcGIS answered HTTP ${response.status}`);
   if (body.startsWith('{"error"')) throw new Error(JSON.parse(body).error.message || 'ArcGIS error');
   return body;
 }
 
 export const itemData = (id, token) => text(`${SHARING}/content/items/${id}/data`, token);
 
-export const DATA_LIMIT = 30 * 1024 * 1024;
+// A guard on memory, not an ArcGIS limit: six items are read at once, each decoded and parsed.
+export const DATA_LIMIT = 100 * 1024 * 1024;
 
 /** An item's data as bytes, or { tooLarge: bytes } without downloading it when it is over the limit. */
 export async function itemBytes(id, token) {
-  const response = await fetch(`${SHARING}/content/items/${id}/data` + (token ? `?token=${encodeURIComponent(token)}` : ''));
+  const response = await get(`${SHARING}/content/items/${id}/data` + (token ? `?token=${encodeURIComponent(token)}` : ''));
+  // An item that is gone or not shared with this user answers with an error page, not data.
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`item data could not be read (HTTP ${response.status})`);
+  }
   const length = Number(response.headers.get('content-length'));
   if (length > DATA_LIMIT) {
     await response.body?.cancel();
