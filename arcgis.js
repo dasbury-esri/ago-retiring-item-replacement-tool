@@ -207,10 +207,18 @@ export async function jsonResources(id, token) {
   const documents = [];
   const failed = [];   // one resource that cannot be read must not hide the others
   for (const name of names.slice(0, RESOURCE_LIMIT)) {
-    const url = `${SHARING}/content/items/${id}/resources/${name.split('/').map(encodeURIComponent).join('/')}`;
+    const path = (resource) => `${SHARING}/content/items/${id}/resources/${resource.split('/').map(encodeURIComponent).join('/')}`;
+    const url = path(name);
     try {
       documents.push({ name, text: await text(url, token) });
     } catch (error) {
+      // Seen on a 2019 beta StoryMap: the listed draft.json cannot be fetched, and the same file
+      // answers one folder down, under resources/. Read that copy when it is there.
+      const copy = sizes.has(`resources/${name}`) ? null : await text(path(`resources/${name}`), token).catch(() => null);
+      if (copy && /^\s*[[{]/.test(copy)) {
+        documents.push({ name: `resources/${name}`, text: copy });
+        continue;
+      }
       // Say what is known about the failure: the listed size, and whether the server answered at all.
       // A request a page may not read the answer to still shows that an answer came.
       const answered = await fetch(url + (token ? `?token=${encodeURIComponent(token)}` : ''), { mode: 'no-cors' }).then(() => true, () => false);
@@ -263,7 +271,9 @@ const services = new Map();
  * An answer is kept for the page session, so layers sharing a service ask for it once;
  * a failure is not kept.
  */
-export function serviceInfo(url, token, params = {}) {
+export function serviceInfo(address, token, params = {}) {
+  // Old maps hold http:// addresses, which a browser will not request from an https page.
+  const url = address.replace(/^http:\/\//i, 'https://');
   const key = `${url}?${JSON.stringify(params)}`;
   if (!services.has(key)) {
     services.set(key, readService(url, token, params).catch((error) => {
