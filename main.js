@@ -1,4 +1,4 @@
-import { CLIENT_ID } from './config.js';
+import { CLIENT_ID, VERSION } from './config.js';
 import { currentSession, signIn, signOut } from './auth.js';
 import {
   DATA_LIMIT, itemBytes, itemData, itemInfo, itemMeta, jsonResources, loadLookup, orgUsers, pool, portalSelf, recordedDependents, schemaCheck,
@@ -49,7 +49,7 @@ async function start() {
   // The owner filter is for people who can also fix other members' items.
   state.admin = user.role === 'org_admin' || (user.privileges || []).includes('portal:admin:updateItems');
   $('account').replaceChildren(`${user.username}${state.admin ? ' (administrator)' : ''} · ${state.self.name} `,
-    h('button', { onclick: signOut }, 'Sign out'));
+    h('button', { onclick: signOut }, 'Sign out'), h('span', { class: 'meta' }, ` version ${VERSION}`));
   status(`${count(state.lookup.byId.size, 'retiring item')} loaded, ${count(state.lookup.byUrl.size, 'distinct service URL')}.`);
   // Offer only the item types that exist in the content this person can scan.
   const scope = state.admin ? `orgid:${state.self.id}` : `owner:"${user.username}"`;
@@ -132,6 +132,7 @@ function buildQuery(form) {
 }
 
 async function scan() {
+  if (signedOut()) return;
   const { q, types } = buildQuery(new FormData($('filters')));
   if (!types.size) return status('Choose at least one item type.');
   Object.assign(state, { results: [], unread: [], scanned: 0, stop: false, mentions: new Map() });
@@ -724,10 +725,14 @@ function download(name, text, type = 'application/json') {
   setTimeout(() => URL.revokeObjectURL(link.href), 10000);
 }
 
-/** Local date and time for a file name, as 2026-11-14_1530. */
-function fileStamp(date = new Date()) {
-  const two = (value) => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}_${two(date.getHours())}${two(date.getMinutes())}`;
+/** Date and time in UTC for a file name, as 2026-11-15T0019Z. */
+const fileStamp = (date = new Date()) => date.toISOString().slice(0, 16).replace(':', '') + 'Z';
+
+/** Say so, and return true, when the sign-in has run out; every request would fail as "invalid token". */
+function signedOut() {
+  if (Date.now() < state.session.expires) return false;
+  status('Your sign-in has expired. Reload the page and sign in again; results on this page are lost on reload, so export first if you need them.');
+  return true;
 }
 
 /** The settings a layer sets itself, for the CSV. Blank where the location is not a layer this tool could change. */
@@ -744,7 +749,8 @@ async function exportCsv(button) {
   button.disabled = true;
   let checked = 0;
   try {
-    await pool(results, 4, async (result) => {
+    // With an expired sign-in the checks would all fail; export what is already known instead.
+    if (!signedOut()) await pool(results, 4, async (result) => {
       result.open();
       await Promise.all(result.locations.map((location) => location.checked));
       checked += 1;
@@ -766,7 +772,7 @@ async function exportCsv(button) {
         location.status || 'Not checked', settingsCell(item, location), usedBy(item.id).map((entry) => entry.item.id).join(' ')]);
     }
   }
-  download(`${fileStamp()}_retiring-item-references.csv`, rows.map((row) => row.map(cell).join(',')).join('\r\n'), 'text/csv');
+  download(`${fileStamp()}_ago-retiring-item-references.csv`, rows.map((row) => row.map(cell).join(',')).join('\r\n'), 'text/csv');
 }
 
 start().catch((error) => status('Could not start: ' + error.message));

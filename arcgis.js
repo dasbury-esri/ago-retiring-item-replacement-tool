@@ -208,14 +208,55 @@ export async function jsonResources(id, token) {
 
 // ---- Step c: compare services and write the fix ------------------------------------------
 
-/** Read a service or layer description. The token is only ever sent to arcgis.com hosts. */
-export async function serviceInfo(url, token, params = {}) {
+// At most four service requests run at once: an item with a dozen layers would otherwise send
+// two dozen together, to servers that are slower and stricter than the sharing API.
+let running = 0;
+const waiting = [];
+async function limited(fn) {
+  if (running >= 4) await new Promise((resolve) => waiting.push(resolve));
+  running += 1;
   try {
-    return await request(url, params);
-  } catch (error) {
-    if (!token || !/\.arcgis\.com$/i.test(new URL(url).hostname)) throw error;
-    return request(url, { ...params, token });
+    return await fn();
+  } finally {
+    running -= 1;
+    waiting.shift()?.();
   }
+}
+
+async function readService(url, token, params) {
+  try {
+    return await limited(() => request(url, params));
+  } catch (error) {
+    const host = new URL(url).hostname;
+    if (!token || !/\.arcgis\.com$/i.test(host)) throw error;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await limited(() => request(url, { ...params, token }));
+      } catch (again) {
+        // 498 is "invalid token". Try once more before believing it.
+        if (again.code !== 498) throw again;
+        if (attempt === 2) throw Object.assign(new Error(`${host} did not accept your sign-in (${again.message.replace(/\.$/, '')})`), { code: 498 });
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
+  }
+}
+
+const services = new Map();
+/**
+ * Read a service or layer description. The token is only ever sent to arcgis.com hosts.
+ * An answer is kept for the page session, so layers sharing a service ask for it once;
+ * a failure is not kept.
+ */
+export function serviceInfo(url, token, params = {}) {
+  const key = `${url}?${JSON.stringify(params)}`;
+  if (!services.has(key)) {
+    services.set(key, readService(url, token, params).catch((error) => {
+      services.delete(key);
+      throw error;
+    }));
+  }
+  return services.get(key);
 }
 
 /** The five most common values of a field, as [{ value, count }], for judging a field mapping. */

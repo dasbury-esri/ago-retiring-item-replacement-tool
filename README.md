@@ -96,8 +96,8 @@ An item the scan did not list cannot be rescanned this way; run a scan filtered 
 ## CSV export
 
 "Export CSV" first runs the checks for every listed item not yet opened, a few at a time, so
-each row has a real status; the button shows progress. The file is named with the local date and
-time, for example `2026-11-14_1530_retiring-item-references.csv`. One row per reference.
+each row has a real status; the button shows progress. The file is named with the date and time
+in UTC, for example `2026-11-15T0019Z_ago-retiring-item-references.csv`. One row per reference.
 `layer_settings` lists what a layer sets itself (rendering rule, mosaic rule, band selection,
 renderer, filter, pop-up) or `none`; it is blank where the reference is not a layer this tool
 could change. A "Not compatible" row with `none` is a layer with nothing of its own to carry over.
