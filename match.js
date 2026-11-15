@@ -254,6 +254,12 @@ const tiled = (info) => /TilesOnly/i.test(info.capabilities || '');
 
 function compareLayer(label, oldInfo, newInfo, out, layerId = null) {
   const block = (text) => { out.problems.push(text); out.blocking.push(text); };
+  // A swap keeps the layer number, which need not be the same layer in another service.
+  const plain = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  if (layerId === null && oldInfo.id !== undefined && oldInfo.name && newInfo.name && plain(oldInfo.name) !== plain(newInfo.name)) {
+    out.notes.push(`The retiring layer is named "${oldInfo.name}" and layer ${newInfo.id ?? oldInfo.id} of the replacement is named "${newInfo.name}". ` +
+      'A swap keeps the layer number, so confirm these are the same layer.');
+  }
   if ((oldInfo.geometryType || null) !== (newInfo.geometryType || null)) {
     block(`${label}geometry type differs (${oldInfo.geometryType} vs ${newInfo.geometryType})`);
   }
@@ -287,7 +293,7 @@ function compareLayer(label, oldInfo, newInfo, out, layerId = null) {
  * which matter only if the layer being swapped uses them.
  */
 export function compareSchemas(oldInfo, newInfo) {
-  const out = { problems: [], blocking: [], fields: [] };
+  const out = { problems: [], blocking: [], fields: [], notes: [] };
   const block = (text) => { out.problems.push(text); out.blocking.push(text); };
   const list = (info) => [...(info.layers || []), ...(info.tables || [])];
   if (oldInfo.layers || oldInfo.tables) {

@@ -200,10 +200,15 @@ export async function jsonResources(id, token) {
     start = listing.nextStart || -1;
   }
   const documents = [];
+  const failed = [];   // one resource that cannot be read must not hide the others
   for (const name of names.slice(0, RESOURCE_LIMIT)) {
-    documents.push({ name, text: await text(`${SHARING}/content/items/${id}/resources/${name.split('/').map(encodeURIComponent).join('/')}`, token) });
+    try {
+      documents.push({ name, text: await text(`${SHARING}/content/items/${id}/resources/${name.split('/').map(encodeURIComponent).join('/')}`, token) });
+    } catch (error) {
+      failed.push(`${name}: ${error.message}`);
+    }
   }
-  return { documents, skipped: Math.max(0, names.length - RESOURCE_LIMIT), limit: RESOURCE_LIMIT };
+  return { documents, failed, skipped: Math.max(0, names.length - RESOURCE_LIMIT), limit: RESOURCE_LIMIT };
 }
 
 // ---- Step c: compare services and write the fix ------------------------------------------
@@ -276,7 +281,17 @@ export async function schemaCheck(oldUrl, newUrl, token) {
   const parts = serviceParts(oldUrl);
   const whole = parts.layer === null && /^(map|feature)server$/.test(parts.kind);
   const suffix = whole ? '/layers' : '';
-  const [before, after] = await Promise.all([serviceInfo(oldUrl + suffix, token), serviceInfo(newUrl + suffix, token)]);
+  const [before, after] = await Promise.all([
+    serviceInfo(oldUrl + suffix, token),
+    serviceInfo(newUrl + suffix, token).catch(async (error) => {
+      // A swap keeps the layer number. Say so when the replacement service has no such layer.
+      const there = parts.layer === null ? null : await serviceInfo(serviceParts(newUrl).root, token).catch(() => null);
+      const layers = there && [...(there.layers || []), ...(there.tables || [])];
+      if (!layers || layers.some((layer) => layer.id === parts.layer)) throw error;
+      throw new Error(`the retiring layer is number ${parts.layer} in its service, and the replacement service has no layer ${parts.layer}. ` +
+        `It has: ${layers.map((layer) => `${layer.id} "${layer.name}"`).join(', ') || 'no layers'}. Use the replacement by hand`);
+    }),
+  ]);
   const result = compareSchemas(before, after);
   for (const field of result.fields) {
     field.oldLayer = oldUrl + (field.layerId === null ? '' : `/${field.layerId}`);

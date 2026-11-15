@@ -246,3 +246,13 @@ test('layer settings lists what the layer sets itself', () => {
   assert.deepEqual(layerSettings({ mosaicRule: null, layerDefinition: { definitionExpression: '' } }), []);
   assert.deepEqual(layerSettings('text'), []);
 });
+
+test('a layer swapped by number is flagged when the two layers have different names', () => {
+  const field = { name: 'A', type: 'esriFieldTypeString' };
+  const level = (id, name) => ({ id, name, geometryType: 'esriGeometryPolygon', fields: [field] });
+  assert.deepEqual(compareSchemas(level(0, 'Hexagons Level 5'), level(0, 'hexagons_level_5')).notes, []);
+  const notes = compareSchemas(level(0, 'Hexagons Level 5'), level(0, 'Hexagons Level 1')).notes;
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /"Hexagons Level 5".*layer 0.*"Hexagons Level 1"/);
+  assert.deepEqual(compareSchemas({ pixelType: 'U8', name: 'A' }, { pixelType: 'U8', name: 'B' }).notes, []);   // image services have no layers
+});

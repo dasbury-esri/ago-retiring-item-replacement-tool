@@ -139,8 +139,16 @@ async function scan() {
   $('results').replaceChildren();
   $('scan').disabled = true;
   $('stop').disabled = false;
-  const progress = () => status(`Scanned ${count(state.scanned, 'item')} — ${state.results.length} affected` +
-    (state.unread.length ? `, ${state.unread.length} not fully read` : '') + (state.stop ? ' (stopping…)' : '…'));
+  // Count first, so progress can be shown against a total. The scan still runs if the count fails.
+  status('Counting the items to scan…');
+  const counts = await typeCounts(q, state.session.token).catch(() => null);
+  const total = counts ? [...types].reduce((sum, type) => sum + (counts.get(type) || 0), 0) : 0;
+  const began = Date.now();
+  const progress = () => status(`Scanned ${state.scanned.toLocaleString()}${total ? ` of ${total.toLocaleString()}` : ''} ${state.scanned === 1 && !total ? 'item' : 'items'}` +
+    `${total ? ` (${Math.min(100, Math.floor(100 * state.scanned / total))}%)` : ''} — ${state.results.length} affected` +
+    (state.unread.length ? `, ${state.unread.length} not fully read` : '') +
+    (state.stop ? ' (stopping…)' : `${timeLeft(began, state.scanned, total)}…`));
+  if (total) progress();
   try {
     let batch = [];
     const flush = async () => {
@@ -169,6 +177,17 @@ async function scan() {
   renderSummary();
 }
 
+/** ", about 4 min left", from the pace so far. Empty until there is enough to judge by. */
+function timeLeft(began, done, total) {
+  const elapsed = Date.now() - began;
+  if (!total || done < 20 || elapsed < 5000 || done >= total) return '';
+  const minutes = (elapsed / done) * (total - done) / 60000;
+  if (minutes < 1) return ', under a minute left';
+  if (minutes < 90) return `, about ${Math.round(minutes)} min left`;
+  const tens = Math.round(minutes / 10) * 10;
+  return `, about ${Math.floor(tens / 60)} h${tens % 60 ? ` ${tens % 60} min` : ''} left`;
+}
+
 /** Everything readable in an item, as [{ name, text, doc }]. unread is called with each reason something was not read. */
 async function readItem(item, unread) {
   const documents = [];
@@ -185,6 +204,7 @@ async function readItem(item, unread) {
       const resources = await jsonResources(item.id, state.session.token);
       for (const entry of resources.documents) documents.push({ name: entry.name, text: entry.text, doc: parse(entry.text) });
       if (resources.skipped) unread(`${count(resources.skipped, 'resource file')} beyond the first ${resources.limit} not read`);
+      if (resources.failed.length) unread(`${count(resources.failed.length, 'resource file')} could not be read (${resources.failed.join('; ')})`);
     }
   } catch (error) {
     unread(error.message);
@@ -515,7 +535,7 @@ function renderSwap(result, location, node, target, direct, chosen) {
   showChanges();
   action.append(plan.sameService ? 'Reading the retiring item…' : 'Comparing schemas…');
   const check = plan.sameService
-    ? keepInherited(plan, location, node).then(() => { showChanges(); return { same: true, blocking: [], fields: [] }; })
+    ? keepInherited(plan, location, node).then(() => { showChanges(); return { same: true, blocking: [], fields: [], notes: [] }; })
     : schemaCheck(plan.oldUrl, plan.newUrl, state.session.token);
   location.checked = check.then((schema) => {
     if (location.run !== run) return;
@@ -533,6 +553,7 @@ function renderSwap(result, location, node, target, direct, chosen) {
     const missing = used.filter((entry) => entry.uses.length && entry.field.issue === 'missing');
     const selects = missing.map(({ field }) => fieldPicker(field));
     checks.replaceChildren(
+      ...schema.notes.map((note) => h('div', { class: 'bad' }, note)),
       unused.length ? h('div', {}, `Not in the replacement, or a different type there, but not used by this layer's own settings: ${unused.join(', ')}. ` +
         'Items that use this one are checked for them below, as far as this scan and ArcGIS can see.') : '',
       ...retyped.map(({ field, uses }) => h('div', { class: 'bad' },
@@ -577,7 +598,8 @@ function renderSwap(result, location, node, target, direct, chosen) {
     selects.forEach(({ select }) => select.addEventListener('change', update));
     button.addEventListener('click', () => save(result, [{ location, changes: changes(), action }]));
     const clean = !schema.fields.length;
-    location.status = clean ? 'Same schema; swap offered' : 'Schema differs; swap offered with caveats: ' + schema.problems.join('; ');
+    location.status = (clean ? 'Same schema; swap offered' : 'Schema differs; swap offered with caveats: ' + schema.problems.join('; ')) +
+      (schema.notes.length ? '; layer names differ, confirm it is the same layer' : '');
     action.replaceChildren(
       h('span', { class: 'good' }, plan.sameService ? 'Same service; the layer keeps its URL.' : clean ? 'Same schema.' : 'Schema differs; see above.'),
       h('label', {}, rename, node.title ? ` Rename layer "${node.title}" to` : ' Name the layer'), title, button);
