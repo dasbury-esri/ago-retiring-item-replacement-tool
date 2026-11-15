@@ -194,19 +194,28 @@ const RESOURCE_LIMIT = 200;
 /** JSON resources of an item (StoryMap and Experience Builder drafts and saved versions). */
 export async function jsonResources(id, token) {
   const names = [];
+  const sizes = new Map();
   for (let start = 1; start > 0;) {
     const listing = await request(`${SHARING}/content/items/${id}/resources`, { token, start, num: 100 });
-    // An empty file has nothing to read, and asking for one fails in a browser.
-    for (const entry of listing.resources || []) if (/\.json$/i.test(entry.resource) && entry.size !== 0) names.push(entry.resource);
+    for (const entry of listing.resources || []) {
+      sizes.set(entry.resource, entry.size);
+      // An empty file has nothing to read, and asking for one fails in a browser.
+      if (/\.json$/i.test(entry.resource) && entry.size !== 0) names.push(entry.resource);
+    }
     start = listing.nextStart || -1;
   }
   const documents = [];
   const failed = [];   // one resource that cannot be read must not hide the others
   for (const name of names.slice(0, RESOURCE_LIMIT)) {
+    const url = `${SHARING}/content/items/${id}/resources/${name.split('/').map(encodeURIComponent).join('/')}`;
     try {
-      documents.push({ name, text: await text(`${SHARING}/content/items/${id}/resources/${name.split('/').map(encodeURIComponent).join('/')}`, token) });
+      documents.push({ name, text: await text(url, token) });
     } catch (error) {
-      failed.push(`${name}: ${error.message}`);
+      // Say what is known about the failure: the listed size, and whether the server answered at all.
+      // A request a page may not read the answer to still shows that an answer came.
+      const answered = await fetch(url + (token ? `?token=${encodeURIComponent(token)}` : ''), { mode: 'no-cors' }).then(() => true, () => false);
+      failed.push(`${name}, listed as ${sizes.get(name) ?? 'unknown'} bytes: ${error.message}; ` +
+        (answered ? 'the server did answer, but with something this page is not allowed to read or cannot decode' : 'the server gave no answer to a second kind of request either'));
     }
   }
   return { documents, failed, skipped: Math.max(0, names.length - RESOURCE_LIMIT), limit: RESOURCE_LIMIT };

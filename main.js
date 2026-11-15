@@ -414,7 +414,7 @@ function describe(location) {
   const names = location.candidates.slice(0, 3).flatMap((entry, index) => [index ? ', ' : '', itemLink(entry.id, entry.title)]);
   const more = location.candidates.length > 3 ? ` and ${location.candidates.length - 3} more` : '';
   return location.retiring ? ['Retiring: ', ...names]
-    : [`One of ${location.candidates.length} retiring items sharing this service: `, ...names, more];
+    : [`This layer's service is shared by ${location.candidates.length} retiring items, and the layer does not say which one it came from: `, ...names, more];
 }
 
 /** Title plus a warning when the item is itself on its way out. */
@@ -515,7 +515,9 @@ function renderSwap(result, location, node, target, direct, chosen, layer = null
   const plan = planSwap(location, node, state.lookup, target, chosen);
   location.status = plan.fixable ? 'Swap possible, schema not checked' : plan.reason;
   if (!plan.fixable) {
-    action.append(plan.reason, chosen ? '' : similarNote(location.candidates[0].id));
+    action.append(plan.reason, chosen ? '' : similarNote(location.candidates[0].id),
+      chosen || location.candidates[0].replacementIds.length ? '' : ' There is nothing to swap to. If you know of a suitable item, name it under "Use a different replacement item"; ' +
+        'otherwise expect this layer to stop drawing once the service is retired.');
     return [action];
   }
   const superseded = plan.replacement.deprecated || plan.replacement.newVersionId;
@@ -684,7 +686,7 @@ function sourceNote(entry) {
 
 function replacementNote(location) {
   const entry = location.candidates[0];
-  if (!entry.replacementIds.length) return entry.replacementNote + '.' + similarNote(entry.id);
+  if (!entry.replacementIds.length) return `Esri names no replacement: its table says "${entry.replacementNote}".` + similarNote(entry.id);
   const chain = replacementChain(entry, state.lookup);
   const latest = chain.length > 1 ? ` Latest version: ${chain.at(-1).title} (${chain.at(-1).id}).` : '';
   return `Replacement: ${chain[0] ? targetLabel(chain[0]) : entry.replacementIds[0]} (${entry.replacementIds.join(', ')})${sourceNote(entry) || '.'}${latest}${similarNote(entry.replacementIds[0])}`;

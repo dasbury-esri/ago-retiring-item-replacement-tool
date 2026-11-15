@@ -188,7 +188,9 @@ export function planSwap(location, node, lookup, target, chosen = false) {
     const targets = new Set(location.candidates.map((entry) => entry.replacementIds.join(',')));
     if (targets.size !== 1) return no('Several retiring items share this service URL and they have different replacements.');
     const sample = location.candidates[0];
-    if (sample.replacementIds.length === 0) return no(sample.replacementNote);
+    if (sample.replacementIds.length === 0) {
+      return no(`Esri names no replacement for ${location.candidates.length > 1 ? 'these items' : 'this item'}: its table says "${sample.replacementNote}".`);
+    }
     if (sample.replacementIds.length > 1) {
       // One retiring item split into several: the user picks which of the listed items this layer becomes.
       if (!target || !sample.replacementIds.includes(target.id)) return no(`Esri lists ${sample.replacementIds.length} replacements for this item; choose one.`);
