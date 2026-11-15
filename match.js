@@ -220,6 +220,29 @@ export function planSwap(location, node, lookup, target, chosen = false) {
   return { fixable: true, replacement, oldUrl: bare, newUrl, changes, sameService };
 }
 
+const plain = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+/**
+ * Which layer of the replacement service stands in for the retiring layer: the one with the
+ * same number and name, else the only one with the same name, else the only layer there is.
+ * Returns its id, or null when that cannot be told and the user has to choose.
+ * @param old     { id, name } of the retiring layer
+ * @param layers  [{ id, name }] of the replacement service
+ */
+export function matchLayer(old, layers) {
+  const same = layers.find((layer) => layer.id === old.id);
+  if (same && plain(same.name) === plain(old.name)) return same.id;
+  const named = layers.filter((layer) => old.name && plain(layer.name) === plain(old.name));
+  if (named.length === 1) return named[0].id;
+  return layers.length === 1 ? layers[0].id : null;
+}
+
+/** Point a planned swap at another layer of the replacement service. */
+export function setSwapLayer(plan, id) {
+  plan.newUrl = `${serviceParts(plan.newUrl).root}/${id}`;
+  plan.changes.find((change) => change.key === 'url').to = plan.newUrl;
+}
+
 /**
  * Which display settings a layer sets itself, as a list of names. These are what a change of
  * layer type would have to carry over; a layer with none takes everything from its service.
@@ -250,21 +273,42 @@ export function applySwap(doc, path, changes) {
 }
 
 const OID = 'esriFieldTypeOID';
+
+// Plain-language readings of the service properties that rule a swap out.
+const SHAPES = { esriGeometryPoint: 'points', esriGeometryMultipoint: 'points', esriGeometryPolyline: 'lines', esriGeometryPolygon: 'areas' };
+const NUMBERS = {
+  U1: 'whole numbers 0 to 1', U2: 'whole numbers 0 to 3', U4: 'whole numbers 0 to 15', U8: 'whole numbers 0 to 255',
+  S8: 'whole numbers -128 to 127', U16: 'whole numbers 0 to 65,535', S16: 'whole numbers -32,768 to 32,767',
+  U32: 'large whole numbers', S32: 'large whole numbers', F32: 'decimal numbers', F64: 'decimal numbers',
+};
+const KINDS = {
+  Thematic: 'categories or classes', Generic: 'not stated (a catch-all)', Elevation: 'elevations', Processed: 'imagery already coloured for display',
+  Scientific: 'scientific measurements', VectorUV: 'direction and speed', VectorMagdir: 'direction and speed',
+};
+const kind = (type) => KINDS[String(type).replace('esriImageServiceDataType', '')] || String(type);
+const EXPLAIN = {
+  pixelType: (before, after) => `pixel values are stored as different kinds of number: ${NUMBERS[before] || before} in the retiring service, ` +
+    `${NUMBERS[after] || after} in the replacement, so value ranges and colours set for the old layer will not fit`,
+  bandCount: (before, after) => `the services have a different number of bands (${before} and ${after}), so a band combination chosen for the old layer may not exist`,
+  serviceDataType: (before, after) => `the services are declared as different kinds of data: ${kind(before)} in the retiring service, ${kind(after)} in the replacement, ` +
+    'so the pixel values may not mean the same thing and the layer may draw with the wrong colours and legend',
+};
 const tiled = (info) => /TilesOnly/i.test(info.capabilities || '');
 
 function compareLayer(label, oldInfo, newInfo, out, layerId = null) {
   const block = (text) => { out.problems.push(text); out.blocking.push(text); };
-  // A swap keeps the layer number, which need not be the same layer in another service.
-  const plain = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  // The same layer can have another name in another service; a different name is worth a look.
   if (layerId === null && oldInfo.id !== undefined && oldInfo.name && newInfo.name && plain(oldInfo.name) !== plain(newInfo.name)) {
-    out.notes.push(`The retiring layer is named "${oldInfo.name}" and layer ${newInfo.id ?? oldInfo.id} of the replacement is named "${newInfo.name}". ` +
-      'A swap keeps the layer number, so confirm these are the same layer.');
+    out.notes.push(`The retiring layer is named "${oldInfo.name}" and the replacement layer (number ${newInfo.id ?? oldInfo.id}) is named "${newInfo.name}". ` +
+      'Confirm these are the same layer.');
   }
   if ((oldInfo.geometryType || null) !== (newInfo.geometryType || null)) {
-    block(`${label}geometry type differs (${oldInfo.geometryType} vs ${newInfo.geometryType})`);
+    const shape = (type) => SHAPES[type] || String(type).replace('esriGeometry', '').toLowerCase();
+    block(`${label}the features are different shapes: ${shape(oldInfo.geometryType)} in the retiring service, ${shape(newInfo.geometryType)} in the replacement, ` +
+      `so the layer's symbols cannot be reused (geometry type differs: ${oldInfo.geometryType} vs ${newInfo.geometryType})`);
   }
   for (const key of ['pixelType', 'bandCount', 'serviceDataType']) {
-    if (oldInfo[key] !== newInfo[key]) block(`${label}${key} differs (${oldInfo[key]} vs ${newInfo[key]})`);
+    if (oldInfo[key] !== newInfo[key]) block(`${label}${EXPLAIN[key](oldInfo[key], newInfo[key])} (${key} differs: ${oldInfo[key]} vs ${newInfo[key]})`);
   }
   if ((oldInfo.pixelType || newInfo.pixelType) && tiled(oldInfo) !== tiled(newInfo)) {
     block(`${label}one image service is tiled and the other is dynamic, so the layer type would have to change`);

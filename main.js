@@ -1,13 +1,13 @@
 import { CLIENT_ID, VERSION } from './config.js';
 import { currentSession, signIn, signOut } from './auth.js';
 import {
-  DATA_LIMIT, itemBytes, itemData, itemInfo, itemMeta, jsonResources, loadLookup, orgUsers, pool, portalSelf, recordedDependents, schemaCheck,
+  DATA_LIMIT, itemBytes, itemData, itemInfo, itemMeta, jsonResources, layerOptions, loadLookup, orgUsers, pool, portalSelf, recordedDependents, schemaCheck,
   searchItems,
   topValues, typeCounts, updateItemData,
 } from './arcgis.js';
 import { describeUses, fieldUses, renameFields } from './fields.js';
 import { readContent } from './content.js';
-import { FIXABLE_TYPES, applySwap, findReferences, layerSettings, nodeAt, planSwap, pointer, replacementChain } from './match.js';
+import { FIXABLE_TYPES, applySwap, findReferences, layerSettings, nodeAt, planSwap, pointer, replacementChain, serviceParts, setSwapLayer } from './match.js';
 import { GROUPS, NOT_SCANNED, RESOURCE_TYPES, isKnownType, isScanned } from './types.js';
 
 const $ = (id) => document.getElementById(id);
@@ -447,7 +447,9 @@ function renderLocation(result, location) {
   }
   // The direct replacement may itself be deprecated; let the user step to it or jump to the latest.
   const chain = replacementChain(location.candidates[0], state.lookup);
-  const show = (target, chosen = false) => body.replaceChildren(...renderSwap(result, location, node, target, target === chain[0], chosen));
+  // layer: the replacement layer the user picked, when the tool could not match one by name.
+  const show = (target, chosen = false, layer = null) => body.replaceChildren(
+    ...renderSwap(result, location, node, target, target === chain[0], chosen, layer, (id) => show(target, chosen, id)));
   if (chain.length > 1) {
     const step = (index) => (index === chain.length - 1 ? 'Latest version' : index === 0 ? 'Next version' : 'Later version');
     const select = h('select', {}, chain.map((item, index) => h('option', {}, `${step(index)}: ${targetLabel(item)}`)));
@@ -504,7 +506,7 @@ async function keepInherited(plan, location, node) {
   }
 }
 
-function renderSwap(result, location, node, target, direct, chosen) {
+function renderSwap(result, location, node, target, direct, chosen, layer = null, pickLayer = () => {}) {
   const run = (location.run = {});   // a later choice in the version picker supersedes this one
   location.ready = null;
   location.checked = null;   // settles when this location's status is final
@@ -521,6 +523,7 @@ function renderSwap(result, location, node, target, direct, chosen) {
   const changeBox = h('div', { class: 'change' });
   const showChanges = () => changeBox.replaceChildren(...plan.changes.map((change) => h('div', {}, describeChange(change))));
   const checks = h('div', { class: 'checks' });
+  const layerBox = h('div', { class: 'action' });
   const parts = [
     h('div', {}, 'Replacement: ', itemLink(plan.replacement.id, plan.replacement.title),
       chosen ? ' — chosen by you, not listed by Esri.' : direct ? sourceNote(location.candidates[0])
@@ -529,6 +532,7 @@ function renderSwap(result, location, node, target, direct, chosen) {
     similarNote(plan.replacement.id) ? h('div', {}, similarNote(plan.replacement.id).trim()) : null,
     plan.replacement.urlNote ? h('div', { class: 'bad' }, plan.replacement.urlNote) : null,
     changeBox,
+    layerBox,
     checks,
     action,
   ].filter(Boolean);
@@ -536,7 +540,25 @@ function renderSwap(result, location, node, target, direct, chosen) {
   action.append(plan.sameService ? 'Reading the retiring item…' : 'Comparing schemas…');
   const check = plan.sameService
     ? keepInherited(plan, location, node).then(() => { showChanges(); return { same: true, blocking: [], fields: [], notes: [] }; })
-    : schemaCheck(plan.oldUrl, plan.newUrl, state.session.token);
+    : chooseLayer().then(() => schemaCheck(plan.oldUrl, plan.newUrl, state.session.token));
+  // Layer numbers do not carry over between services: find the replacement's layer by name, or ask.
+  async function chooseLayer() {
+    if (serviceParts(plan.oldUrl).layer === null) return;
+    const options = await layerOptions(plan.oldUrl, plan.newUrl, state.session.token);
+    const use = layer ?? options.pick;
+    if (options.layers.length > 1) {
+      const select = h('select', {}, use === null ? h('option', { value: '' }, 'Choose a layer…') : null,
+        options.layers.map((option) => h('option', { value: String(option.id), selected: option.id === use }, `${option.id} — ${option.name}`)));
+      select.addEventListener('change', () => { if (select.value !== '') pickLayer(Number(select.value)); });
+      layerBox.replaceChildren(h('label', {}, `Layer in the replacement service to use for "${options.oldName}" `, select),
+        use === null ? '' : h('span', { class: 'meta' }, layer === null ? ' matched by name' : ' chosen by you'));
+    }
+    if (use === null) {
+      throw Object.assign(new Error(`The replacement service has ${options.layers.length} layers and none is named like "${options.oldName}"; choose one.`), { choose: true });
+    }
+    setSwapLayer(plan, use);
+    showChanges();
+  }
   location.checked = check.then((schema) => {
     if (location.run !== run) return;
     if (schema.blocking.length) {
@@ -606,6 +628,11 @@ function renderSwap(result, location, node, target, direct, chosen) {
     update();
   }).catch((error) => {
     if (location.run !== run) return;
+    if (error.choose) {
+      location.status = error.message;
+      action.replaceChildren(error.message);
+      return;
+    }
     location.status = 'Schema could not be compared: ' + error.message;
     action.replaceChildren(h('span', { class: 'bad' }, `Schema could not be compared (${error.message}) — not offered as a swap.`));
   });

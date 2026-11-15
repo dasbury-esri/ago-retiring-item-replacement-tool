@@ -1,6 +1,6 @@
 // ArcGIS REST calls. Uses global fetch, so it also runs under Node for checks.
 import { LINK_FIXES, PORTAL, RETIREMENT_TABLE, SUGGESTIONS, URL_FIXES } from './config.js';
-import { buildLookup, compareSchemas, newVersionLink, parseReplacement, retirementDate, serviceParts } from './match.js';
+import { buildLookup, compareSchemas, matchLayer, newVersionLink, parseReplacement, retirementDate, serviceParts } from './match.js';
 
 const SHARING = PORTAL + '/sharing/rest';
 
@@ -196,7 +196,8 @@ export async function jsonResources(id, token) {
   const names = [];
   for (let start = 1; start > 0;) {
     const listing = await request(`${SHARING}/content/items/${id}/resources`, { token, start, num: 100 });
-    for (const entry of listing.resources || []) if (/\.json$/i.test(entry.resource)) names.push(entry.resource);
+    // An empty file has nothing to read, and asking for one fails in a browser.
+    for (const entry of listing.resources || []) if (/\.json$/i.test(entry.resource) && entry.size !== 0) names.push(entry.resource);
     start = listing.nextStart || -1;
   }
   const documents = [];
@@ -276,22 +277,24 @@ export async function topValues(layerUrl, field, oidField, token) {
   });
 }
 
+/**
+ * The layers of the replacement service, for a swap of one layer of the retiring service.
+ * Layer numbers do not carry over between services, so the layer is matched by name.
+ * Returns { oldName, layers: [{ id, name }], pick }; pick is null when the user has to choose.
+ */
+export async function layerOptions(oldUrl, newUrl, token) {
+  const [before, service] = await Promise.all([serviceInfo(oldUrl, token), serviceInfo(serviceParts(newUrl).root, token)]);
+  const layers = [...(service.layers || []), ...(service.tables || [])].map(({ id, name }) => ({ id, name }));
+  if (!layers.length) throw new Error('the replacement service lists no layers');
+  return { oldName: before.name, layers, pick: matchLayer({ id: serviceParts(oldUrl).layer, name: before.name }, layers) };
+}
+
 /** Compare the retiring and replacement services behind a planned swap. */
 export async function schemaCheck(oldUrl, newUrl, token) {
   const parts = serviceParts(oldUrl);
   const whole = parts.layer === null && /^(map|feature)server$/.test(parts.kind);
   const suffix = whole ? '/layers' : '';
-  const [before, after] = await Promise.all([
-    serviceInfo(oldUrl + suffix, token),
-    serviceInfo(newUrl + suffix, token).catch(async (error) => {
-      // A swap keeps the layer number. Say so when the replacement service has no such layer.
-      const there = parts.layer === null ? null : await serviceInfo(serviceParts(newUrl).root, token).catch(() => null);
-      const layers = there && [...(there.layers || []), ...(there.tables || [])];
-      if (!layers || layers.some((layer) => layer.id === parts.layer)) throw error;
-      throw new Error(`the retiring layer is number ${parts.layer} in its service, and the replacement service has no layer ${parts.layer}. ` +
-        `It has: ${layers.map((layer) => `${layer.id} "${layer.name}"`).join(', ') || 'no layers'}. Use the replacement by hand`);
-    }),
-  ]);
+  const [before, after] = await Promise.all([serviceInfo(oldUrl + suffix, token), serviceInfo(newUrl + suffix, token)]);
   const result = compareSchemas(before, after);
   for (const field of result.fields) {
     field.oldLayer = oldUrl + (field.layerId === null ? '' : `/${field.layerId}`);

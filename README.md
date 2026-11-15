@@ -59,7 +59,10 @@ The retiring and replacement services are compared layer by layer (the ObjectID 
 extra fields in the replacement are fine).
 
 - **Not offered:** a layer ID is missing, the geometry type differs, or for image services the
-  pixel type, band count or data type differs, or one is tiled and the other dynamic.
+  pixel type, band count or data type differs, or one is tiled and the other dynamic. Each
+  reason is given in plain words first, then the property and its two values. "Data type" is
+  what the publisher declared; "generic" is a catch-all, so a thematic-to-generic difference
+  means the tool cannot tell whether the values mean the same thing, not that they do not.
 - **Offered with a note:** a field is missing or has a different type, but the layer's own
   settings do not use it.
 - **Offered with a warning:** a field the layer uses has a different type.
@@ -101,6 +104,15 @@ in UTC, for example `2026-11-15T0019Z_ago-retiring-item-references.csv`. One row
 `layer_settings` lists what a layer sets itself (rendering rule, mosaic rule, band selection,
 renderer, filter, pop-up) or `none`; it is blank where the reference is not a layer this tool
 could change. A "Not compatible" row with `none` is a layer with nothing of its own to carry over.
+
+## Which layer of the replacement service
+
+Layer numbers do not carry over between services (layer 9 of one can be layer 1 of another), so
+a swap of one layer finds its counterpart by name: the layer with the same number and name, else
+the only layer with the same name, else the only layer there is. Where the replacement service
+has several layers a "Layer in the replacement service" list shows them, with the match
+preselected; where nothing matches, nothing is offered until you choose. A replacement layer
+whose name differs from the retiring one carries a warning to confirm it is the same layer.
 
 ## Several listed replacements
 

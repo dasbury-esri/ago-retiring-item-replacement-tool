@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  serviceParts, parseReplacement, newVersionLink, retirementDate, replacementChain, buildLookup, findReferences, layerSettings, planSwap, applySwap, compareSchemas, nodeAt,
+  serviceParts, parseReplacement, newVersionLink, retirementDate, replacementChain, buildLookup, findReferences, layerSettings, matchLayer, setSwapLayer, planSwap, applySwap, compareSchemas, nodeAt,
 } from '../match.js';
 import { readContent } from '../content.js';
 import { describeUses, fieldUses, renameFields } from '../fields.js';
@@ -253,6 +253,36 @@ test('a layer swapped by number is flagged when the two layers have different na
   assert.deepEqual(compareSchemas(level(0, 'Hexagons Level 5'), level(0, 'hexagons_level_5')).notes, []);
   const notes = compareSchemas(level(0, 'Hexagons Level 5'), level(0, 'Hexagons Level 1')).notes;
   assert.equal(notes.length, 1);
-  assert.match(notes[0], /"Hexagons Level 5".*layer 0.*"Hexagons Level 1"/);
+  assert.match(notes[0], /"Hexagons Level 5".*number 0.*"Hexagons Level 1"/);
   assert.deepEqual(compareSchemas({ pixelType: 'U8', name: 'A' }, { pixelType: 'U8', name: 'B' }).notes, []);   // image services have no layers
+});
+
+test('the replacement layer is matched by name, and asked for when that fails', () => {
+  const levels = [{ id: 0, name: 'Hex Level 5' }, { id: 1, name: 'Hex Level 4' }, { id: 2, name: 'Hex Level 3' }];
+  assert.equal(matchLayer({ id: 0, name: 'hex_level_5' }, levels), 0);               // same number, same name
+  assert.equal(matchLayer({ id: 9, name: 'Hex Level 4' }, levels), 1);               // number differs, one name matches
+  assert.equal(matchLayer({ id: 0, name: 'Hex Level 4' }, levels), 1);               // same number is another layer
+  assert.equal(matchLayer({ id: 9, name: 'hexagon.sde.r4' }, levels), null);         // nothing to go on
+  assert.equal(matchLayer({ id: 0, name: 'something else' }, levels), null);         // the number alone is not enough
+  assert.equal(matchLayer({ id: 3, name: 'States 2022' }, [{ id: 0, name: 'States' }]), 0);   // the only layer there is
+  assert.equal(matchLayer({ id: 0, name: 'A' }, [{ id: 0, name: 'A' }, { id: 1, name: 'A' }]), 0);
+  assert.equal(matchLayer({ id: 5, name: 'A' }, [{ id: 0, name: 'A' }, { id: 1, name: 'A' }]), null);
+
+  const doc = webMap();
+  const [location] = findReferences(doc, lookup);
+  const plan = planSwap(location, nodeAt(doc, location.path), lookup);
+  setSwapLayer(plan, 7);
+  assert.equal(plan.newUrl, NEW_URL + '/7');
+  assert.equal(plan.changes.find((change) => change.key === 'url').to, NEW_URL + '/7');
+});
+
+test('reasons that rule a swap out are given in plain words, with the property named', () => {
+  const image = { pixelType: 'U16', bandCount: 1, serviceDataType: 'esriImageServiceDataTypeThematic' };
+  const [kindOf] = compareSchemas(image, { ...image, serviceDataType: 'esriImageServiceDataTypeGeneric' }).blocking;
+  assert.match(kindOf, /categories or classes in the retiring service, not stated \(a catch-all\) in the replacement/);
+  assert.match(kindOf, /may not mean the same thing.*serviceDataType differs: esriImageServiceDataTypeThematic vs esriImageServiceDataTypeGeneric/);
+  const [numbers] = compareSchemas(image, { ...image, pixelType: 'F32' }).blocking;
+  assert.match(numbers, /whole numbers 0 to 65,535 in the retiring service, decimal numbers in the replacement.*pixelType differs: U16 vs F32/);
+  const [shapes] = compareSchemas({ fields: [], geometryType: 'esriGeometryPolygon' }, { fields: [], geometryType: 'esriGeometryPoint' }).blocking;
+  assert.match(shapes, /areas in the retiring service, points in the replacement/);
 });
